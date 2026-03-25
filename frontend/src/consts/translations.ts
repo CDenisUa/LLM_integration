@@ -9,6 +9,8 @@ export const translations = {
       pageGeneration: 'Page Generation',
       promptToHtml: 'Prompt → HTML',
       multiStepPipeline: 'Multi-Step Pipeline',
+      tools: 'Tools',
+      pdfReader: 'PDF Audio Reader',
     },
     home: {
       subtitle: 'A playground for learning how to integrate language models into web apps',
@@ -182,6 +184,8 @@ export const translations = {
       pageGeneration: 'Генерация страниц',
       promptToHtml: 'Промпт → HTML',
       multiStepPipeline: 'Многошаговый пайплайн',
+      tools: 'Инструменты',
+      pdfReader: 'Аудиочиталка PDF',
     },
     home: {
       subtitle: 'Площадка для изучения интеграции языковых моделей в веб-приложения',

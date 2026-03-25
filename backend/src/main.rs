@@ -15,6 +15,10 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    std::fs::create_dir_all("storage/pdfs").unwrap();
+    std::fs::create_dir_all("storage/tts").unwrap();
+    std::fs::create_dir_all("storage/covers").unwrap();
+
     dotenvy::dotenv().ok();
 
     let cors = CorsLayer::new()
@@ -24,6 +28,7 @@ async fn main() {
 
     let app = Router::new()
         .nest("/api", routes::router())
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 100))
         .layer(cors);
 
     let port = std::env::var("PORT")

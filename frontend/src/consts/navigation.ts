@@ -18,5 +18,11 @@ export function getNavItems(t: Translations): NavItem[] {
         { label: t.nav.multiStepPipeline, href: '/advanced-pipeline' },
       ],
     },
+    {
+      label: t.nav.tools,
+      children: [
+        { label: t.nav.pdfReader, href: '/pdf-reader' },
+      ],
+    },
   ]
 }
