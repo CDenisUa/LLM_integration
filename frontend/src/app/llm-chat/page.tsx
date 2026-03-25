@@ -2,12 +2,15 @@
 
 // Core
 import { useState, useRef, useEffect } from 'react'
+// Hooks
+import { useTranslations } from '@/hooks/useTranslations'
 // Services
 import { sendChatMessage } from '@/services/api'
 // Store
 import { useChatStore } from '@/store/chatStore'
 
 export default function LLMChatPage() {
+  const { t } = useTranslations()
   const { messages, isLoading, addMessage, setLoading, clearMessages } = useChatStore()
   const [input, setInput] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -30,7 +33,7 @@ export default function LLMChatPage() {
     } catch (err) {
       addMessage({
         role: 'assistant',
-        content: `Error: ${err instanceof Error ? err.message : 'Something went wrong'}`,
+        content: `${t.chat.error}: ${err instanceof Error ? err.message : t.chat.unknownError}`,
       })
     } finally {
       setLoading(false)
@@ -49,14 +52,14 @@ export default function LLMChatPage() {
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-800">
         <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-white">LLM Chat</h1>
-          <p className="text-xs text-zinc-400 dark:text-zinc-500">Gemini 2.5 Flash</p>
+          <h1 className="text-lg font-semibold text-zinc-900 dark:text-white">{t.chat.title}</h1>
+          <p className="text-xs text-zinc-400 dark:text-zinc-500">{t.chat.model}</p>
         </div>
         <button
           onClick={clearMessages}
           className="text-xs text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 px-3 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
         >
-          Clear
+          {t.chat.clear}
         </button>
       </div>
 
@@ -65,8 +68,8 @@ export default function LLMChatPage() {
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className="text-4xl mb-4">✦</div>
-            <p className="text-zinc-500 dark:text-zinc-400 text-lg font-medium">Start a conversation</p>
-            <p className="text-zinc-400 dark:text-zinc-600 text-sm mt-1">Ask Gemini anything</p>
+            <p className="text-zinc-500 dark:text-zinc-400 text-lg font-medium">{t.chat.emptyTitle}</p>
+            <p className="text-zinc-400 dark:text-zinc-600 text-sm mt-1">{t.chat.emptySubtitle}</p>
           </div>
         )}
 
@@ -108,7 +111,7 @@ export default function LLMChatPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message... (Enter to send)"
+            placeholder={t.chat.placeholder}
             rows={1}
             className="flex-1 bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-zinc-300 dark:focus:ring-zinc-600 max-h-40"
             style={{ height: 'auto' }}
@@ -123,7 +126,7 @@ export default function LLMChatPage() {
             disabled={isLoading || !input.trim()}
             className="px-4 py-3 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-xl text-sm font-medium hover:bg-zinc-700 dark:hover:bg-zinc-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
           >
-            Send
+            {t.chat.send}
           </button>
         </div>
       </div>

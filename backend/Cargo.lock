@@ -693,6 +693,7 @@ name = "llm-lab-backend"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "bytes",
  "dotenvy",
  "futures-util",

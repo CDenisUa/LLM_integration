@@ -1,27 +1,34 @@
-// Core
-import Link from "next/link";
+'use client'
 
-const sections = [
-  {
-    title: "LLM Chat",
-    description: "Talk to AI models in real time",
-    items: [{ label: "Gemini Chat", href: "/llm-chat", badge: "Google AI" }],
-  },
-  {
-    title: "Page Generation",
-    description: "Generate landing pages and websites with AI",
-    items: [{ label: "Page Generator", href: "/page-generator", badge: "Gemini" }],
-  },
-];
+// Core
+import Link from 'next/link'
+// Hooks
+import { useTranslations } from '@/hooks/useTranslations'
 
 export default function Home() {
+  const { t } = useTranslations()
+
+  const sections = [
+    {
+      title: t.nav.llmChat,
+      description: t.home.llmChatDesc,
+      items: [{ label: t.nav.gemini, href: '/llm-chat', badge: 'Google AI' }],
+    },
+    {
+      title: t.nav.pageGeneration,
+      description: t.home.pageGenDesc,
+      items: [
+        { label: t.nav.promptToHtml, href: '/page-generator', badge: 'Gemini' },
+        { label: t.nav.multiStepPipeline, href: '/advanced-pipeline', badge: t.home.workflowBadge },
+      ],
+    },
+  ]
+
   return (
     <div className="p-10 max-w-4xl">
       <div className="mb-10">
         <h1 className="text-4xl font-bold text-zinc-900 dark:text-white mb-3">LLM Lab</h1>
-        <p className="text-zinc-500 dark:text-zinc-400 text-lg">
-          A playground for learning how to integrate language models into web apps
-        </p>
+        <p className="text-zinc-500 dark:text-zinc-400 text-lg">{t.home.subtitle}</p>
       </div>
 
       <div className="space-y-8">
@@ -45,7 +52,7 @@ export default function Home() {
                     </span>
                   </div>
                   <span className="text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-500 text-sm">
-                    Open →
+                    {t.home.open}
                   </span>
                 </Link>
               ))}
@@ -54,5 +61,5 @@ export default function Home() {
         ))}
       </div>
     </div>
-  );
+  )
 }

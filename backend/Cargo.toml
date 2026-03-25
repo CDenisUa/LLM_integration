@@ -16,3 +16,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 bytes = "1"
 tokio-stream = "0.1"
+base64 = "0.22"

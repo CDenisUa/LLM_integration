@@ -1,12 +1,16 @@
 'use client'
 
 // Core
-import { useState, useEffect } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useTheme } from 'next-themes'
 // Consts
-import { NAV_ITEMS } from '@/consts/navigation'
+import { getNavItems } from '@/consts/navigation'
+// Hooks
+import { useTranslations } from '@/hooks/useTranslations'
+// Store
+import { useLocaleStore, type Locale } from '@/store/localeStore'
 // Types
 import type { NavItem } from '@/types'
 
@@ -27,11 +31,13 @@ function MoonIcon() {
   )
 }
 
-function ThemeToggle() {
+function ThemeToggle({ title }: { title: string }) {
   const { theme, setTheme } = useTheme()
-  const [mounted, setMounted] = useState(false)
-
-  useEffect(() => setMounted(true), [])
+  const mounted = useSyncExternalStore(
+    () => () => undefined,
+    () => true,
+    () => false
+  )
 
   if (!mounted) return <div className="w-7 h-7" />
 
@@ -39,11 +45,36 @@ function ThemeToggle() {
     <button
       onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
       className="w-7 h-7 flex items-center justify-center rounded-md text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
-      title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={title}
     >
       {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
     </button>
   )
+}
+
+function LocaleToggle() {
+  const locale = useLocaleStore((state) => state.locale)
+  const setLocale = useLocaleStore((state) => state.setLocale)
+
+  function renderButton(nextLocale: Locale) {
+    const active = locale === nextLocale
+
+    return (
+      <button
+        key={nextLocale}
+        onClick={() => setLocale(nextLocale)}
+        className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+          active
+            ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
+            : 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+        }`}
+      >
+        {nextLocale.toUpperCase()}
+      </button>
+    )
+  }
+
+  return <div className="flex items-center gap-1">{(['en', 'ru'] as Locale[]).map(renderButton)}</div>
 }
 
 function NavNode({ item, depth = 0 }: { item: NavItem; depth?: number }) {
@@ -102,6 +133,9 @@ function NavNode({ item, depth = 0 }: { item: NavItem; depth?: number }) {
 }
 
 export default function Sidebar() {
+  const { t, locale } = useTranslations()
+  const navItems = getNavItems(t)
+
   return (
     <aside className="w-60 shrink-0 h-screen sticky top-0 bg-zinc-50 dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 flex flex-col">
       <div className="px-4 py-5 border-b border-zinc-200 dark:border-zinc-800">
@@ -109,12 +143,15 @@ export default function Sidebar() {
           <Link href="/" className="text-lg font-bold text-zinc-900 dark:text-white tracking-tight">
             LLM Lab
           </Link>
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <LocaleToggle />
+            <ThemeToggle title={locale === 'ru' ? 'Переключить тему' : 'Toggle theme'} />
+          </div>
         </div>
-        <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">Learning playground</p>
+        <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">{t.sidebar.tagline}</p>
       </div>
       <nav className="flex-1 overflow-y-auto py-4 space-y-1">
-        {NAV_ITEMS.map((item) => (
+        {navItems.map((item) => (
           <NavNode key={item.label} item={item} />
         ))}
       </nav>
