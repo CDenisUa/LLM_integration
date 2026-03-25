@@ -2,10 +2,8 @@
 
 // Core
 import { useState, useRef, useEffect } from 'react'
-
 // Services
 import { sendChatMessage } from '@/services/api'
-
 // Store
 import { useChatStore } from '@/store/chatStore'
 
@@ -52,7 +50,7 @@ export default function LLMChatPage() {
       <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-800">
         <div>
           <h1 className="text-lg font-semibold text-zinc-900 dark:text-white">LLM Chat</h1>
-          <p className="text-xs text-zinc-400 dark:text-zinc-500">Gemini 1.5 Flash</p>
+          <p className="text-xs text-zinc-400 dark:text-zinc-500">Gemini 2.5 Flash</p>
         </div>
         <button
           onClick={clearMessages}

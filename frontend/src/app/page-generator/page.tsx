@@ -2,7 +2,6 @@
 
 // Core
 import { useState } from 'react'
-
 // Services
 import { generatePage } from '@/services/api'
 

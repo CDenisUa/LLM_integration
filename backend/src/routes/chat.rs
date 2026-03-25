@@ -35,7 +35,7 @@ pub async fn chat_handler(
         )
     })?;
 
-    let model = payload.model.unwrap_or_else(|| "gemini-1.5-flash".to_string());
+    let model = payload.model.unwrap_or_else(|| "gemini-2.5-flash".to_string());
 
     // Build contents array from history + new message
     let mut contents: Vec<serde_json::Value> = payload

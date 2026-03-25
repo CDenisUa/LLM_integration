@@ -5,10 +5,8 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useTheme } from 'next-themes'
-
 // Consts
 import { NAV_ITEMS } from '@/consts/navigation'
-
 // Types
 import type { NavItem } from '@/types'
 

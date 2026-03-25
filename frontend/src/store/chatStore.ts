@@ -1,6 +1,5 @@
 // Core
 import { create } from 'zustand'
-
 // Types
 import type { Message } from '@/types'
 

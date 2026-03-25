@@ -1,13 +1,12 @@
 // Consts
 import { API_URL } from '@/consts/api'
-
 // Types
 import type { Message } from '@/types'
 
 export async function sendChatMessage(
   message: string,
   history: Message[],
-  model = 'gemini-1.5-flash'
+  model = 'gemini-2.5-flash'
 ): Promise<string> {
   const response = await fetch(`${API_URL}/api/chat`, {
     method: 'POST',

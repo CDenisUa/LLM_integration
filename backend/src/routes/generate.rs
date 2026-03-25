@@ -24,7 +24,7 @@ pub async fn generate_page_handler(
         )
     })?;
 
-    let model = payload.model.unwrap_or_else(|| "gemini-1.5-flash".to_string());
+    let model = payload.model.unwrap_or_else(|| "gemini-2.5-flash".to_string());
 
     let system_prompt = format!(
         "You are an expert web developer. Generate a complete, beautiful, self-contained HTML landing page based on the user's request. \

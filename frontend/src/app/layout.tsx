@@ -1,11 +1,9 @@
 // Core
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-
 // Components
 import { ThemeProvider } from "@/components/ThemeProvider";
 import Sidebar from "@/components/layout/Sidebar";
-
 // Styles
 import "./globals.css";
 
