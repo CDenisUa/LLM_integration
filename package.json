@@ -1,0 +1,7 @@
+{
+  "name": "llm-integration",
+  "private": true,
+  "scripts": {
+    "dev": "./start-dev.sh"
+  }
+}

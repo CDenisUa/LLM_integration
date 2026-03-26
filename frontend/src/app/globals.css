@@ -22,9 +22,9 @@ body {
 }
 
 .pdf-reader-read-line {
-  background-color: rgba(253, 230, 138, 0.72) !important;
-  color: #1f2937 !important;
-  box-shadow: inset 0 -0.55em 0 rgba(253, 230, 138, 0.72);
+  background-color: rgba(99, 102, 241, 0.09) !important;
+  color: #475569 !important;
+  box-shadow: inset 0 -0.55em 0 rgba(99, 102, 241, 0.09);
 }
 
 .pdf-reader-active-line {
@@ -41,11 +41,13 @@ body {
   width: 100vw;
   height: 100vh;
   align-items: center;
+  justify-content: center;
   padding: clamp(24px, 3vw, 40px);
 }
 
 .pdf-reader-fullscreen .react-pdf__Document {
-  min-height: calc(100vh - 80px);
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .pdf-page-flip-forward {

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
-import { Play, Square, ChevronLeft, ChevronRight, Upload, ZoomIn, ZoomOut, Loader2, BookOpen, ArrowLeft, Pencil, Expand, Shrink } from 'lucide-react'
+import { Play, Square, ChevronLeft, ChevronRight, Upload, ZoomIn, ZoomOut, Loader2, BookOpen, ArrowLeft, Pencil, Expand, Shrink, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { API_URL } from '@/consts/api'
 
 if (typeof window !== 'undefined') {
@@ -92,6 +92,7 @@ type ReaderProgress = {
 
 const READER_PROGRESS_PREFIX = 'pdf-reader-progress:'
 const READER_SESSION_KEY = 'pdf-reader-session'
+const READER_SCALE_KEY = 'pdf-reader-scale'
 
 const getReaderProgressKey = (bookId: string) => `${READER_PROGRESS_PREFIX}${bookId}`
 const escapeHtml = (value: string) =>
@@ -140,7 +141,14 @@ export default function PdfReaderClient() {
   const [file, setFile] = useState<File | string | null>(null)
   const [numPages, setNumPages] = useState<number>(0)
   const [pageNumber, setPageNumber] = useState(1)
-  const [scale, setScale] = useState(1.2)
+  const [scale, setScale] = useState(() => {
+    if (typeof window === 'undefined') return 1.2
+    const saved = window.localStorage.getItem(READER_SCALE_KEY)
+    const parsed = Number(saved)
+    if (!Number.isFinite(parsed)) return 1.2
+    return parsed > 0 ? parsed : 1.2
+  })
+  const [zoomInput, setZoomInput] = useState('120')
   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [pdfProxy, setPdfProxy] = useState<any>(null)
@@ -164,15 +172,52 @@ export default function PdfReaderClient() {
   const requestSequenceRef = useRef(0)
   const ttsCacheRef = useRef<Map<string, TtsResponse>>(new Map())
   const readerViewportRef = useRef<HTMLDivElement | null>(null)
-  const pageSurfaceRef = useRef<HTMLDivElement | null>(null)
-  const pageGestureActiveRef = useRef(false)
-  const pageGestureTimeoutRef = useRef<number | null>(null)
-  const currentPageRef = useRef(1)
-  const numPagesRef = useRef(0)
+  const pageScrollRef = useRef<HTMLDivElement | null>(null)
+  const previewScrollRef = useRef<HTMLDivElement | null>(null)
+  const leftPageSurfaceRef = useRef<HTMLDivElement | null>(null)
+  const rightPageSurfaceRef = useRef<HTMLDivElement | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [fullscreenScale, setFullscreenScale] = useState<number | null>(null)
+  const [isPreviewOpen, setIsPreviewOpen] = useState(true)
+  const [isTwoPageView, setIsTwoPageView] = useState(false)
+  const [previewScrollTop, setPreviewScrollTop] = useState(0)
+  const [previewViewportHeight, setPreviewViewportHeight] = useState(0)
   const [pageFlipDirection, setPageFlipDirection] = useState<'forward' | 'backward'>('forward')
   const renderScale = isFullscreen && fullscreenScale ? fullscreenScale : scale
+
+  const resetPdfState = useCallback(() => {
+    setNumPages(0)
+    setPdfProxy(null)
+    setMappings([])
+    setPageLines([])
+    setOverlayRects([])
+    setWordRects([])
+    setActiveLineId(null)
+    setFullscreenScale(null)
+  }, [])
+
+  const scrollReaderShellToTop = useCallback(() => {
+    if (typeof window === 'undefined') return
+
+    readerViewportRef.current?.scrollTo({ top: 0, behavior: 'auto' })
+    pageScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+
+    const main = document.querySelector('main')
+    if (main instanceof HTMLElement) {
+      main.scrollTo({ top: 0, behavior: 'auto' })
+    } else {
+      window.scrollTo({ top: 0, behavior: 'auto' })
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(READER_SCALE_KEY, String(scale))
+  }, [scale])
+
+  useEffect(() => {
+    setZoomInput(String(Math.round(scale * 100)))
+  }, [scale])
 
   useEffect(() => {
     fetch(`${API_URL}/api/pdf`)
@@ -237,6 +282,8 @@ export default function PdfReaderClient() {
         if (typeof window !== 'undefined') {
           window.localStorage.setItem(READER_SESSION_KEY, JSON.stringify({ bookId: meta.id }))
         }
+        resetPdfState()
+        scrollReaderShellToTop()
         setFile(`${API_URL}/api/pdf/files/${meta.id}.pdf`)
         setPageNumber(1)
         setCurrentLineIndex(0)
@@ -271,6 +318,8 @@ export default function PdfReaderClient() {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(READER_SESSION_KEY, JSON.stringify({ bookId: id }))
     }
+    resetPdfState()
+    scrollReaderShellToTop()
     setFile(`${API_URL}/api/pdf/files/${id}.pdf`)
     const savedProgress = typeof window !== 'undefined'
       ? window.localStorage.getItem(getReaderProgressKey(id))
@@ -298,11 +347,76 @@ export default function PdfReaderClient() {
     setViewMode('reader')
   }
 
+  useEffect(() => {
+    if (viewMode !== 'reader') return
+    scrollReaderShellToTop()
+  }, [scrollReaderShellToTop, viewMode, currentBookId])
+
+  useEffect(() => {
+    const container = previewScrollRef.current
+    if (!container) return
+
+    const updateHeight = () => setPreviewViewportHeight(container.clientHeight)
+    updateHeight()
+
+    const observer = new ResizeObserver(() => updateHeight())
+    observer.observe(container)
+
+    return () => observer.disconnect()
+  }, [isPreviewOpen, viewMode])
+
+  useEffect(() => {
+    if (!isPreviewOpen || isFullscreen) return
+
+    const target = document.getElementById(`preview-page-${pageNumber}`)
+    target?.scrollIntoView({ block: 'nearest' })
+  }, [isFullscreen, isPreviewOpen, pageNumber])
+
+  useEffect(() => {
+    const main = document.querySelector('main')
+    const html = document.documentElement
+    const body = document.body
+    if (!(main instanceof HTMLElement)) return
+
+    const previousOverflow = main.style.overflow
+    const previousHeight = main.style.height
+    const previousHtmlOverflow = html.style.overflow
+    const previousBodyOverflow = body.style.overflow
+    const previousBodyHeight = body.style.height
+
+    if (viewMode === 'reader') {
+      html.style.overflow = 'hidden'
+      body.style.overflow = 'hidden'
+      body.style.height = '100dvh'
+      main.style.overflow = 'hidden'
+      main.style.height = '100dvh'
+    } else {
+      html.style.overflow = ''
+      body.style.overflow = ''
+      body.style.height = ''
+      main.style.overflow = ''
+      main.style.height = ''
+    }
+
+    return () => {
+      html.style.overflow = previousHtmlOverflow
+      body.style.overflow = previousBodyOverflow
+      body.style.height = previousBodyHeight
+      main.style.overflow = previousOverflow
+      main.style.height = previousHeight
+    }
+  }, [viewMode])
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const onDocumentLoadSuccess = (pdf: any) => {
     setNumPages(pdf.numPages)
     setPdfProxy(pdf) 
   }
+
+  const onDocumentLoadError = useCallback((error: Error) => {
+    resetPdfState()
+    console.error('Failed to load PDF document:', error)
+  }, [resetPdfState])
 
   const saveProgress = useCallback((progress: ReaderProgress) => {
     if (!currentBookId || typeof window === 'undefined') return
@@ -327,20 +441,18 @@ export default function PdfReaderClient() {
   }, [activeLineId])
 
   useEffect(() => {
-    currentPageRef.current = pageNumber
-  }, [pageNumber])
-
-  useEffect(() => {
-    numPagesRef.current = numPages
-  }, [numPages])
-
-  useEffect(() => {
     if (!pdfProxy || viewMode !== 'reader') return
+
+    let isDisposed = false
+    const currentPdf = pdfProxy
 
     const extractText = async () => {
       try {
-        const page = await pdfProxy.getPage(pageNumber)
+        const page = await currentPdf.getPage(pageNumber)
+        if (isDisposed) return
+
         const textContent = await page.getTextContent()
+        if (isDisposed) return
 
         const viewport = page.getViewport({ scale: renderScale })
 
@@ -456,6 +568,8 @@ export default function PdfReaderClient() {
           }
         })
 
+        if (isDisposed) return
+
         setMappings(newMappings)
         setPageLines(lines)
 
@@ -503,6 +617,8 @@ export default function PdfReaderClient() {
           ? Math.min(pendingProgress.lineIndex, Math.max(lines.length - 1, 0))
           : Math.min(currentLineIndexRef.current, Math.max(lines.length - 1, 0))
 
+        if (isDisposed) return
+
         setCurrentLineIndex(nextLineIndex)
         setActiveLineId(lines[nextLineIndex]?.id ?? null)
         saveProgress({ pageNumber, lineIndex: nextLineIndex })
@@ -511,11 +627,17 @@ export default function PdfReaderClient() {
           pendingResumeRef.current = null
         }
       } catch (err) {
-        console.error('Error extracting text:', err)
+        if (!isDisposed) {
+          console.error('Error extracting text:', err)
+        }
       }
     }
 
-    extractText()
+    void extractText()
+
+    return () => {
+      isDisposed = true
+    }
   }, [pageNumber, pdfProxy, renderScale, saveProgress, viewMode])
 
   const stopAudio = useCallback(() => {
@@ -545,14 +667,6 @@ export default function PdfReaderClient() {
   }, [stopAudio])
 
   useEffect(() => {
-    return () => {
-      if (pageGestureTimeoutRef.current !== null) {
-        window.clearTimeout(pageGestureTimeoutRef.current)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(document.fullscreenElement === readerViewportRef.current)
     }
@@ -574,14 +688,19 @@ export default function PdfReaderClient() {
       try {
         const page = await pdfProxy.getPage(pageNumber)
         const viewport = page.getViewport({ scale: 1 })
-        const availableHeight = Math.max(container.clientHeight - 32, 200)
-        const nextScale = availableHeight / viewport.height
+        const horizontalPadding = 48
+        const verticalPadding = 48
+        const availableWidth = Math.max(container.clientWidth - horizontalPadding, 200)
+        const availableHeight = Math.max(container.clientHeight - verticalPadding, 200)
+        const widthScale = availableWidth / viewport.width
+        const heightScale = availableHeight / viewport.height
+        const nextScale = Math.min(widthScale, heightScale)
 
         if (!isDisposed) {
           setFullscreenScale(nextScale)
         }
       } catch (error) {
-        console.error('Failed to fit PDF page to fullscreen height:', error)
+        console.error('Failed to fit PDF page to fullscreen viewport:', error)
       }
     }
 
@@ -865,41 +984,99 @@ export default function PdfReaderClient() {
     stopAudio()
   }, [numPages, saveProgress, stopAudio])
 
-  const handlePageSurfaceWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (viewMode !== 'reader' || numPagesRef.current <= 1) return
+  const isTwoPageMode = isTwoPageView && numPages > 1
+  const leftDisplayPageNumber = isTwoPageMode
+    ? pageNumber <= 1
+      ? 1
+      : pageNumber >= numPages
+        ? numPages
+        : pageNumber
+    : pageNumber
+  const rightDisplayPageNumber = isTwoPageMode
+    ? pageNumber <= 1
+      ? (numPages >= 2 ? 2 : null)
+      : pageNumber >= numPages
+        ? (numPages >= 2 ? numPages - 1 : null)
+        : (pageNumber + 1 <= numPages ? pageNumber + 1 : null)
+    : null
 
-    if (pageGestureTimeoutRef.current !== null) {
-      window.clearTimeout(pageGestureTimeoutRef.current)
-    }
+  const goForward = useCallback(() => {
+    if (pageNumber >= numPages) return
+    const step = isTwoPageMode ? 2 : 1
+    goToPage(pageNumber + step, 'forward')
+  }, [goToPage, isTwoPageMode, numPages, pageNumber])
 
-    pageGestureTimeoutRef.current = window.setTimeout(() => {
-      pageGestureActiveRef.current = false
-      pageGestureTimeoutRef.current = null
-    }, 280)
+  const goBackward = useCallback(() => {
+    if (pageNumber <= 1) return
+    const step = isTwoPageMode ? 2 : 1
+    goToPage(pageNumber - step, 'backward')
+  }, [goToPage, isTwoPageMode, pageNumber])
 
-    if (Math.abs(event.deltaY) < 4) return
+  const handlePageSurfaceClickCapture = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const isInsideRect = (rect: DOMRect) =>
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom
 
-    if (pageGestureActiveRef.current) {
-      event.preventDefault()
+    const isBottomHalf = (rect: DOMRect) =>
+      event.clientY >= rect.top + rect.height * 0.5
+
+    if (isTwoPageMode) {
+      const leftRect = leftPageSurfaceRef.current?.getBoundingClientRect() ?? null
+      const rightRect = rightPageSurfaceRef.current?.getBoundingClientRect() ?? null
+      if (!leftRect || !rightRect) return
+
+      if (isInsideRect(rightRect) && isBottomHalf(rightRect)) {
+        event.preventDefault()
+        event.stopPropagation()
+        goForward()
+        return
+      }
+
+      if (isInsideRect(leftRect) && isBottomHalf(leftRect)) {
+        event.preventDefault()
+        event.stopPropagation()
+        goBackward()
+      }
       return
     }
 
-    const currentPage = currentPageRef.current
-    const totalPages = numPagesRef.current
+    const surface = leftPageSurfaceRef.current
+    if (!surface || numPages <= 1) return
 
-    if (event.deltaY > 0 && currentPage < totalPages) {
+    const rect = surface.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    if (!isBottomHalf(rect)) return
+
+    if (event.clientX >= rect.left + rect.width * 0.5) {
       event.preventDefault()
-      pageGestureActiveRef.current = true
-      goToPage(currentPage + 1, 'forward')
+      event.stopPropagation()
+      goForward()
       return
     }
 
-    if (event.deltaY < 0 && currentPage > 1) {
-      event.preventDefault()
-      pageGestureActiveRef.current = true
-      goToPage(currentPage - 1, 'backward')
+    event.preventDefault()
+    event.stopPropagation()
+    goBackward()
+  }, [goBackward, goForward, isTwoPageMode, numPages])
+
+  const previewItemApproxHeight = 210
+  const previewOverscan = 4
+  const previewVisibleStart = Math.max(0, Math.floor(previewScrollTop / previewItemApproxHeight) - previewOverscan)
+  const previewVisibleEnd = Math.min(
+    Math.max(numPages - 1, 0),
+    Math.ceil((previewScrollTop + Math.max(previewViewportHeight, 1)) / previewItemApproxHeight) + previewOverscan
+  )
+
+  const applyZoomInput = useCallback(() => {
+    const parsedPercent = Number(zoomInput)
+    if (!Number.isFinite(parsedPercent) || parsedPercent <= 0) {
+      setZoomInput(String(Math.round(scale * 100)))
+      return
     }
-  }, [goToPage, viewMode])
+    setScale(Math.max(parsedPercent / 100, 0.01))
+  }, [scale, zoomInput])
 
   return (
     <div className={`flex flex-col h-full ${viewMode !== 'reader' ? 'max-w-6xl mx-auto p-4 md:p-8 space-y-6 w-full' : 'w-full'}`}>
@@ -991,86 +1168,199 @@ export default function PdfReaderClient() {
       )}
 
       {viewMode === 'reader' && (
-        <div className="flex-1 flex flex-col bg-zinc-100 dark:bg-zinc-950 overflow-hidden">
-          {/* PDF Viewer Area */}
-          <div
-            ref={readerViewportRef}
-            tabIndex={-1}
-            className={`flex-1 overflow-auto bg-zinc-200/50 dark:bg-[#121212] flex justify-center p-2 md:p-4 ${
-              isFullscreen ? 'pdf-reader-fullscreen' : ''
-            }`}
-          >
-            <Document
-              file={file}
-              onLoadSuccess={onDocumentLoadSuccess}
-              loading={<div className="text-zinc-500 flex items-center gap-2 mt-10"><Loader2 className="w-5 h-5 animate-spin" /> Loading Document...</div>}
-              className="flex flex-col items-center"
+        <div className="relative flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col bg-zinc-100 dark:bg-zinc-950 overflow-hidden">
+          <div className="relative flex-1 min-h-0">
+            {/* PDF Viewer Area */}
+            <div
+              ref={readerViewportRef}
+              tabIndex={-1}
+              className={`h-full bg-zinc-200/50 dark:bg-[#121212] ${
+                isFullscreen
+                  ? 'overflow-hidden p-0'
+                  : `overflow-hidden p-2 md:p-4 ${isPreviewOpen ? 'pr-40 sm:pr-44' : 'pr-16 sm:pr-20'}`
+              } ${
+                isFullscreen ? 'pdf-reader-fullscreen' : ''
+              }`}
             >
-              <div
-                ref={pageSurfaceRef}
-                key={`${pageNumber}-${pageFlipDirection}`}
-                onWheelCapture={handlePageSurfaceWheel}
-                className={`relative shadow-lg transform-gpu border border-black/5 dark:border-white/5 transition-transform origin-top scroll-smooth ${
-                  pageFlipDirection === 'forward' ? 'pdf-page-flip-forward' : 'pdf-page-flip-backward'
+              <Document
+                file={file}
+                onLoadSuccess={onDocumentLoadSuccess}
+                onLoadError={onDocumentLoadError}
+                loading={<div className="text-zinc-500 flex items-center gap-2 mt-10"><Loader2 className="w-5 h-5 animate-spin" /> Loading Document...</div>}
+                className={`mx-auto flex h-full w-full max-w-[1900px] justify-center ${
+                  isFullscreen ? 'items-center' : 'items-start'
                 }`}
               >
-                <Page 
-                  pageNumber={pageNumber} 
-                  scale={renderScale}
-                  renderTextLayer={true}
-                  renderAnnotationLayer={true}
-                  customTextRenderer={customTextRenderer}
-                  loading={<div className="h-[800px] w-[600px] bg-white dark:bg-zinc-900 animate-pulse" />}
-                  className="bg-white dark:bg-zinc-900"
-                />
-                <div className="absolute inset-0 z-30 pointer-events-none">
-                  {overlayRects.map((rect) => {
-                    const isActive = rect.lineId === activeLineId
-                    const isRead = rect.lineIndex < currentLineIndex
+                <div
+                  ref={pageScrollRef}
+                  className={`min-w-0 flex h-full flex-1 justify-center ${
+                    isFullscreen ? 'overflow-hidden' : 'overflow-auto'
+                  }`}
+                >
+                  <div className={`flex items-start justify-center ${isTwoPageMode ? 'gap-3 md:gap-5' : ''}`}>
+                    <div
+                      ref={leftPageSurfaceRef}
+                      key={`left-${leftDisplayPageNumber}-${pageFlipDirection}`}
+                      onClickCapture={handlePageSurfaceClickCapture}
+                      className={`relative shadow-lg transform-gpu border border-black/5 dark:border-white/5 transition-transform origin-top scroll-smooth ${
+                        pageFlipDirection === 'forward' ? 'pdf-page-flip-forward' : 'pdf-page-flip-backward'
+                      }`}
+                    >
+                      <Page
+                        pageNumber={leftDisplayPageNumber}
+                        scale={renderScale}
+                        renderTextLayer={leftDisplayPageNumber === pageNumber}
+                        renderAnnotationLayer={leftDisplayPageNumber === pageNumber}
+                        customTextRenderer={leftDisplayPageNumber === pageNumber ? customTextRenderer : undefined}
+                        loading={<div className="h-[800px] w-[600px] bg-white dark:bg-zinc-900 animate-pulse" />}
+                        className="bg-white dark:bg-zinc-900"
+                      />
+                      {leftDisplayPageNumber === pageNumber && (
+                        <>
+                          <div className="absolute inset-0 z-30 pointer-events-none">
+                            {overlayRects.map((rect) => {
+                              const isActive = rect.lineId === activeLineId
+                              const isRead = rect.lineIndex < currentLineIndex
+
+                              return (
+                                <div
+                                  key={rect.lineId}
+                                  className={`absolute rounded-sm ${
+                                    isActive
+                                      ? 'bg-amber-300/85 ring-1 ring-amber-500'
+                                      : isRead
+                                        ? 'bg-indigo-500/[0.09]'
+                                        : 'bg-transparent'
+                                  }`}
+                                  style={{
+                                    left: rect.left,
+                                    top: rect.top,
+                                    width: rect.width,
+                                    height: rect.height,
+                                  }}
+                                />
+                              )
+                            })}
+                          </div>
+                          <div className="absolute inset-0 z-40">
+                            {wordRects.map((rect) => (
+                              <button
+                                key={`${rect.itemIndex}-${rect.left}-${rect.top}`}
+                                type="button"
+                                onClick={() => void startReadingFromLine(rect.lineIndex, rect.itemIndex)}
+                                className="absolute rounded-[2px] bg-transparent hover:bg-indigo-300/30 focus:bg-indigo-300/30 focus:outline-none"
+                                style={{
+                                  left: rect.left,
+                                  top: rect.top,
+                                  width: rect.width,
+                                  height: rect.height,
+                                }}
+                                aria-label={`Read from word ${rect.itemIndex}`}
+                                title="Click to read from this word"
+                              />
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {isTwoPageMode && rightDisplayPageNumber && (
+                      <div
+                        ref={rightPageSurfaceRef}
+                        key={`right-${rightDisplayPageNumber}-${pageFlipDirection}`}
+                        onClickCapture={handlePageSurfaceClickCapture}
+                        className={`relative shadow-lg transform-gpu border border-black/5 dark:border-white/5 transition-transform origin-top scroll-smooth ${
+                          pageFlipDirection === 'forward' ? 'pdf-page-flip-forward' : 'pdf-page-flip-backward'
+                        }`}
+                      >
+                        <Page
+                          pageNumber={rightDisplayPageNumber}
+                          scale={renderScale}
+                          renderTextLayer={false}
+                          renderAnnotationLayer={false}
+                          loading={<div className="h-[800px] w-[600px] bg-white dark:bg-zinc-900 animate-pulse" />}
+                          className="bg-white dark:bg-zinc-900"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Document>
+            </div>
+
+            {!isFullscreen && (
+              <button
+                type="button"
+                onClick={() => setIsPreviewOpen((value) => !value)}
+                className="absolute right-2 sm:right-4 top-4 z-30 inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white/92 px-3 text-sm font-medium text-zinc-700 shadow-sm backdrop-blur transition-colors hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900/92 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                aria-label={isPreviewOpen ? 'Hide page previews' : 'Show page previews'}
+                title={isPreviewOpen ? 'Hide page previews' : 'Show page previews'}
+              >
+                {isPreviewOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+                <span>{isPreviewOpen ? 'Hide Pages' : 'Show Pages'}</span>
+              </button>
+            )}
+
+          {!isFullscreen && numPages > 0 && isPreviewOpen && pdfProxy && (
+              <aside className="absolute right-2 sm:right-4 top-16 bottom-4 z-20 w-32 sm:w-40 overflow-hidden rounded-2xl border border-zinc-200/80 bg-white/90 p-2 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/90">
+                <div className="mb-2 px-1 text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                  Pages
+                </div>
+                <div
+                  ref={previewScrollRef}
+                  className="h-full space-y-2 overflow-y-auto pr-1"
+                  onScroll={(event) => setPreviewScrollTop(event.currentTarget.scrollTop)}
+                >
+                  {Array.from({ length: numPages }, (_, index) => {
+                    const previewPageNumber = index + 1
+                    const isActivePreview = previewPageNumber === pageNumber
+                    const isPreviewVisible = index >= previewVisibleStart && index <= previewVisibleEnd
 
                     return (
-                      <div
-                        key={rect.lineId}
-                        className={`absolute rounded-sm ${
-                          isActive
-                            ? 'bg-amber-300/85 ring-1 ring-amber-500'
-                            : isRead
-                              ? 'bg-amber-200/70'
-                              : 'bg-transparent'
-                        }`}
-                        style={{
-                          left: rect.left,
-                          top: rect.top,
-                          width: rect.width,
-                          height: rect.height,
+                      <button
+                        id={`preview-page-${previewPageNumber}`}
+                        key={previewPageNumber}
+                        type="button"
+                        onClick={() => {
+                          goToPage(
+                            previewPageNumber,
+                            previewPageNumber >= pageNumber ? 'forward' : 'backward'
+                          )
                         }}
-                      />
+                        className={`group block w-full rounded-xl border p-2 text-left transition-all ${
+                          isActivePreview
+                            ? 'border-indigo-500 bg-indigo-50 shadow-sm dark:border-indigo-400 dark:bg-indigo-950/50'
+                            : 'border-zinc-200/80 bg-zinc-50/80 hover:border-zinc-300 hover:bg-white dark:border-zinc-800 dark:bg-zinc-950/70 dark:hover:border-zinc-700 dark:hover:bg-zinc-900'
+                        }`}
+                        aria-label={`Open page ${previewPageNumber}`}
+                      >
+                        <div className="mb-2 text-[11px] font-medium text-zinc-500 group-hover:text-zinc-700 dark:text-zinc-400 dark:group-hover:text-zinc-200">
+                          Page {previewPageNumber}
+                        </div>
+                        <div className="overflow-hidden rounded-md border border-black/5 bg-white shadow-sm dark:border-white/10 dark:bg-zinc-950">
+                          {isPreviewVisible ? (
+                            <Page
+                              pdf={pdfProxy}
+                              pageNumber={previewPageNumber}
+                              width={120}
+                              renderTextLayer={false}
+                              renderAnnotationLayer={false}
+                              loading={<div className="aspect-[3/4] w-full bg-zinc-100 dark:bg-zinc-900 animate-pulse" />}
+                              className="pointer-events-none"
+                            />
+                          ) : (
+                            <div className="aspect-[3/4] w-full bg-zinc-100 dark:bg-zinc-900" />
+                          )}
+                        </div>
+                      </button>
                     )
                   })}
                 </div>
-                <div className="absolute inset-0 z-40">
-                  {wordRects.map((rect) => (
-                    <button
-                      key={`${rect.itemIndex}-${rect.left}-${rect.top}`}
-                      type="button"
-                      onClick={() => void startReadingFromLine(rect.lineIndex, rect.itemIndex)}
-                      className="absolute rounded-[2px] bg-transparent hover:bg-indigo-300/30 focus:bg-indigo-300/30 focus:outline-none"
-                      style={{
-                        left: rect.left,
-                        top: rect.top,
-                        width: rect.width,
-                        height: rect.height,
-                      }}
-                      aria-label={`Read from word ${rect.itemIndex}`}
-                      title="Click to read from this word"
-                    />
-                  ))}
-                </div>
-              </div>
-            </Document>
+              </aside>
+            )}
           </div>
 
-          <div className="px-4 py-3 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 z-10 w-full shrink-0 space-y-3">
+          <div className="shrink-0 px-4 py-3 bg-white/96 dark:bg-zinc-900/96 backdrop-blur border-t border-zinc-200 dark:border-zinc-800 z-30 w-full space-y-3">
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3 text-xs font-medium text-zinc-500">
@@ -1104,9 +1394,7 @@ export default function PdfReaderClient() {
                 <div className="w-px h-6 bg-zinc-300 dark:bg-zinc-700 mx-1 md:mx-2" />
 
                 <button
-                  onClick={() => {
-                    goToPage(pageNumber - 1, 'backward')
-                  }}
+                  onClick={goBackward}
                   disabled={pageNumber <= 1}
                   className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50 transition-colors"
                   title="Previous Page"
@@ -1130,9 +1418,7 @@ export default function PdfReaderClient() {
                   <span className="text-zinc-500 whitespace-nowrap">of {numPages}</span>
                 </div>
                 <button
-                  onClick={() => {
-                    goToPage(pageNumber + 1, 'forward')
-                  }}
+                  onClick={goForward}
                   disabled={pageNumber >= numPages}
                   className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50 transition-colors"
                   title="Next Page"
@@ -1143,15 +1429,32 @@ export default function PdfReaderClient() {
 
               <div className="flex flex-wrap items-center gap-2 md:gap-4 shrink-0">
                 <button
-                  onClick={() => setScale(s => Math.max(s - 0.2, 0.5))}
+                  onClick={() => setScale((s) => Math.max(s - 0.1, 0.01))}
                   className="p-2 hidden md:block rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 shrink-0"
                   title="Zoom Out"
                 >
                   <ZoomOut className="w-5 h-5" />
                 </button>
-                <span className="text-sm font-medium text-zinc-500 hidden md:block shrink-0">{Math.round(scale * 100)}%</span>
+                <div className="hidden md:flex items-center gap-1 shrink-0">
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={zoomInput}
+                    onChange={(event) => setZoomInput(event.target.value)}
+                    onBlur={applyZoomInput}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        applyZoomInput()
+                      }
+                    }}
+                    className="w-16 text-center p-1 rounded border border-zinc-300 dark:border-zinc-700 bg-transparent text-zinc-900 dark:text-zinc-100 text-sm font-medium"
+                    aria-label="Zoom percent"
+                  />
+                  <span className="text-sm font-medium text-zinc-500">%</span>
+                </div>
                 <button
-                  onClick={() => setScale(s => Math.min(s + 0.2, 3))}
+                  onClick={() => setScale((s) => s + 0.1)}
                   className="p-2 hidden md:block rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 shrink-0"
                   title="Zoom In"
                 >
@@ -1166,6 +1469,16 @@ export default function PdfReaderClient() {
                 >
                   {isFullscreen ? <Shrink className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
                   <span className="hidden sm:inline">{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsTwoPageView((value) => !value)}
+                  className="flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                  title={isTwoPageView ? 'Switch to single page' : 'Switch to two-page view'}
+                >
+                  <span className="hidden sm:inline">{isTwoPageView ? '1 Page' : '2 Pages'}</span>
+                  <span className="sm:hidden">{isTwoPageView ? '1P' : '2P'}</span>
                 </button>
 
                 <div className="w-px h-6 bg-zinc-300 dark:bg-zinc-700 mx-1 md:mx-2" />
