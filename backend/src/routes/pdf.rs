@@ -74,6 +74,56 @@ pub async fn update_pdf(
     Ok(Json(metadata))
 }
 
+pub async fn delete_pdf(
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let pdf_path = format!("storage/pdfs/{}.pdf", id);
+    let json_path = format!("storage/pdfs/{}.json", id);
+    let cover_path = format!("storage/covers/{}.jpg", id);
+
+    fs::metadata(&json_path).await.map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "PDF not found"})),
+        )
+    })?;
+
+    fs::remove_file(&pdf_path).await.or_else(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to delete pdf file: {}", e)})),
+        )
+    })?;
+
+    fs::remove_file(&cover_path).await.or_else(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to delete cover file: {}", e)})),
+        )
+    })?;
+
+    fs::remove_file(&json_path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to delete metadata: {}", e)})),
+        )
+    })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn upload_pdf(
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -141,4 +191,70 @@ pub async fn upload_pdf(
     })?;
 
     Ok(Json(meta))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        env,
+        path::{Path as StdPath, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct TestDirGuard {
+        original_dir: PathBuf,
+        temp_dir: PathBuf,
+    }
+
+    impl TestDirGuard {
+        fn enter() -> Self {
+            let original_dir = env::current_dir().expect("current dir");
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let temp_dir = env::temp_dir().join(format!("pdf-delete-test-{unique}"));
+
+            std::fs::create_dir_all(temp_dir.join("storage/pdfs")).expect("create pdf storage");
+            std::fs::create_dir_all(temp_dir.join("storage/covers")).expect("create cover storage");
+            env::set_current_dir(&temp_dir).expect("enter temp dir");
+
+            Self {
+                original_dir,
+                temp_dir,
+            }
+        }
+    }
+
+    impl Drop for TestDirGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.original_dir);
+            let _ = std::fs::remove_dir_all(&self.temp_dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_pdf_removes_pdf_metadata_and_cover() {
+        let _guard = TestDirGuard::enter();
+        let id = "test-book";
+
+        std::fs::write(format!("storage/pdfs/{id}.pdf"), b"pdf").expect("write pdf");
+        std::fs::write(
+            format!("storage/pdfs/{id}.json"),
+            r#"{"id":"test-book","filename":"Test.pdf","uploaded_at":1,"has_cover":true}"#,
+        )
+        .expect("write metadata");
+        std::fs::write(format!("storage/covers/{id}.jpg"), b"cover").expect("write cover");
+
+        let response = delete_pdf(Path(id.to_string()))
+            .await
+            .expect("delete should succeed")
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(!StdPath::new(&format!("storage/pdfs/{id}.pdf")).exists());
+        assert!(!StdPath::new(&format!("storage/pdfs/{id}.json")).exists());
+        assert!(!StdPath::new(&format!("storage/covers/{id}.jpg")).exists());
+    }
 }

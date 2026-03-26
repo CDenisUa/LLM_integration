@@ -17,6 +17,29 @@ require_command() {
   fi
 }
 
+start_backend() {
+  echo "Starting backend with hot reload on http://${HOST}:${BACKEND_PORT}"
+  (
+    cd "${ROOT_DIR}/backend"
+    PORT="${BACKEND_PORT}" cargo watch \
+      --watch src \
+      --watch Cargo.toml \
+      --watch Cargo.lock \
+      --ignore storage \
+      -x run
+  ) &
+  BACKEND_PID="$!"
+}
+
+start_frontend() {
+  echo "Starting frontend on http://${HOST}:${FRONTEND_PORT}"
+  (
+    cd "${ROOT_DIR}/frontend"
+    PORT="${FRONTEND_PORT}" npm run dev -- --hostname "${HOST}" --port "${FRONTEND_PORT}"
+  ) &
+  FRONTEND_PID="$!"
+}
+
 free_port() {
   local port="$1"
   local pids
@@ -73,23 +96,13 @@ monitor_processes() {
 require_command lsof
 require_command npm
 require_command cargo
+require_command cargo-watch
 
 free_port "${FRONTEND_PORT}"
 free_port "${BACKEND_PORT}"
 
-echo "Starting backend on http://${HOST}:${BACKEND_PORT}"
-(
-  cd "${ROOT_DIR}/backend"
-  PORT="${BACKEND_PORT}" cargo run
-) &
-BACKEND_PID="$!"
-
-echo "Starting frontend on http://${HOST}:${FRONTEND_PORT}"
-(
-  cd "${ROOT_DIR}/frontend"
-  PORT="${FRONTEND_PORT}" npm run dev -- --hostname "${HOST}" --port "${FRONTEND_PORT}"
-) &
-FRONTEND_PID="$!"
+start_backend
+start_frontend
 
 trap 'cleanup $?' EXIT INT TERM
 

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
-import { Play, Square, ChevronLeft, ChevronRight, Upload, ZoomIn, ZoomOut, Loader2, BookOpen, ArrowLeft, Pencil, Expand, Shrink, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { Play, Square, ChevronLeft, ChevronRight, Upload, ZoomIn, ZoomOut, Loader2, BookOpen, ArrowLeft, Pencil, Expand, Shrink, PanelRightClose, PanelRightOpen, Trash2 } from 'lucide-react'
 import { API_URL } from '@/consts/api'
 
 if (typeof window !== 'undefined') {
@@ -13,6 +13,7 @@ if (typeof window !== 'undefined') {
 
 type TextMapping = {
   index: number
+  pageNumber: number
   str: string
   isSpoken: boolean
   lineId: string | null
@@ -27,12 +28,14 @@ type TextMapping = {
 
 type ReaderLine = {
   id: string
+  pageNumber: number
   text: string
   itemIndexes: number[]
 }
 
 type OverlayRect = {
   lineId: string
+  pageNumber: number
   lineIndex: number
   left: number
   top: number
@@ -42,6 +45,7 @@ type OverlayRect = {
 
 type WordRect = {
   itemIndex: number
+  pageNumber: number
   lineId: string
   lineIndex: number
   left: number
@@ -59,6 +63,7 @@ type SpeechLineRange = {
 
 type SortableTextItem = {
   index: number
+  pageNumber: number
   str: string
   isSpoken: boolean
   x: number
@@ -95,6 +100,11 @@ const READER_SESSION_KEY = 'pdf-reader-session'
 const READER_SCALE_KEY = 'pdf-reader-scale'
 
 const getReaderProgressKey = (bookId: string) => `${READER_PROGRESS_PREFIX}${bookId}`
+const libraryDateFormatter = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+})
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')
@@ -135,6 +145,7 @@ export default function PdfReaderClient() {
   const [isUploading, setIsUploading] = useState(false)
   
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
 
   const [currentBookId, setCurrentBookId] = useState<string | null>(null)
@@ -184,6 +195,21 @@ export default function PdfReaderClient() {
   const [previewViewportHeight, setPreviewViewportHeight] = useState(0)
   const [pageFlipDirection, setPageFlipDirection] = useState<'forward' | 'backward'>('forward')
   const renderScale = isFullscreen && fullscreenScale ? fullscreenScale : scale
+  const isTwoPageMode = isTwoPageView && numPages > 1
+  const leftDisplayPageNumber = isTwoPageMode
+    ? pageNumber <= 1
+      ? 1
+      : pageNumber >= numPages
+        ? numPages
+        : pageNumber
+    : pageNumber
+  const rightDisplayPageNumber = isTwoPageMode
+    ? pageNumber <= 1
+      ? (numPages >= 2 ? 2 : null)
+      : pageNumber >= numPages
+        ? (numPages >= 2 ? numPages - 1 : null)
+        : (pageNumber + 1 <= numPages ? pageNumber + 1 : null)
+    : null
 
   const resetPdfState = useCallback(() => {
     setNumPages(0)
@@ -313,6 +339,62 @@ export default function PdfReaderClient() {
     setEditingId(null)
   }
 
+  const deleteBook = async (id: string) => {
+    setDeletingId(id)
+
+    try {
+      const res = await fetch(`${API_URL}/api/pdf/${id}`, {
+        method: 'DELETE',
+      })
+
+      if (!res.ok) {
+        const errorText = await res.text()
+        throw new Error(`Delete failed (${res.status}): ${errorText || res.statusText}`)
+      }
+
+      const isCurrentBook = currentBookId === id
+      const nextLibrary = library.filter((book) => book.id !== id)
+
+      setLibrary(nextLibrary)
+      clearReaderProgress(id)
+
+      const persistedSession = typeof window !== 'undefined'
+        ? window.localStorage.getItem(READER_SESSION_KEY)
+        : null
+
+      if (persistedSession) {
+        try {
+          const parsed = JSON.parse(persistedSession) as { bookId?: string }
+          if (parsed.bookId === id) {
+            clearReaderSession()
+          }
+        } catch {
+          clearReaderSession()
+        }
+      }
+
+      if (isCurrentBook) {
+        stopAudio()
+        resetPdfState()
+        setCurrentBookId(null)
+        setFile(null)
+        setPageNumber(1)
+        setCurrentLineIndex(0)
+        clearReaderSession()
+      }
+
+      if (nextLibrary.length === 0) {
+        setViewMode('upload')
+      } else if (isCurrentBook || viewMode !== 'library') {
+        setViewMode('library')
+      }
+    } catch (error) {
+      console.error('Failed to delete book', error)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const openBook = (id: string) => {
     setCurrentBookId(id)
     if (typeof window !== 'undefined') {
@@ -432,6 +514,11 @@ export default function PdfReaderClient() {
     window.localStorage.removeItem(READER_SESSION_KEY)
   }, [])
 
+  const clearReaderProgress = useCallback((bookId: string) => {
+    if (typeof window === 'undefined') return
+    window.localStorage.removeItem(getReaderProgressKey(bookId))
+  }, [])
+
   useEffect(() => {
     currentLineIndexRef.current = currentLineIndex
   }, [currentLineIndex])
@@ -446,138 +533,166 @@ export default function PdfReaderClient() {
     let isDisposed = false
     const currentPdf = pdfProxy
 
-    const extractText = async () => {
-      try {
-        const page = await currentPdf.getPage(pageNumber)
-        if (isDisposed) return
+    const extractPageData = async (targetPageNumber: number) => {
+      const page = await currentPdf.getPage(targetPageNumber)
+      const textContent = await page.getTextContent()
+      const viewport = page.getViewport({ scale: renderScale })
 
-        const textContent = await page.getTextContent()
-        if (isDisposed) return
+      const sortableItems: Array<SortableTextItem & { left: number; top: number; width: number; height: number }> = textContent.items
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((item: any, index: number) => {
+          const strTrimmed = item.str.trim()
+          const tx = pdfjs.Util.transform(viewport.transform, item.transform)
+          const fontSize = Math.hypot(tx[2], tx[3])
+          const x = Number(tx[4] || 0)
+          const y = Number(tx[5] || 0)
+          const width = Math.max(Number(item.width || 0) * renderScale, fontSize * Math.max(strTrimmed.length, 1) * 0.35)
+          const height = Math.max(fontSize, Number(item.height || 0) * renderScale || 0)
+          const left = x
+          const top = y - height * 0.8
 
-        const viewport = page.getViewport({ scale: renderScale })
+          return {
+            index,
+            pageNumber: targetPageNumber,
+            str: item.str,
+            isSpoken: Boolean(strTrimmed),
+            x,
+            y,
+            fontSize,
+            left,
+            top,
+            width,
+            height,
+          }
+        })
+        .sort((a: SortableTextItem, b: SortableTextItem) => {
+          if (Math.abs(a.top - b.top) > 3) return a.top - b.top
+          return a.left - b.left
+        })
 
-        const sortableItems: Array<SortableTextItem & { left: number; top: number; width: number; height: number }> = textContent.items
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .map((item: any, index: number) => {
-            const strTrimmed = item.str.trim()
-            const tx = pdfjs.Util.transform(viewport.transform, item.transform)
-            const fontSize = Math.hypot(tx[2], tx[3])
-            const x = Number(tx[4] || 0)
-            const y = Number(tx[5] || 0)
-            const width = Math.max(Number(item.width || 0) * renderScale, fontSize * Math.max(strTrimmed.length, 1) * 0.35)
-            const height = Math.max(fontSize, Number(item.height || 0) * renderScale || 0)
-            const left = x
-            const top = y - height * 0.8
+      const lines: ReaderLine[] = []
+      const lineBuckets: Array<{ y: number; tolerance: number; items: SortableTextItem[] }> = []
 
-            let isSpoken = true
-            if (!strTrimmed) isSpoken = false
+      for (const item of sortableItems) {
+        if (!item.str.trim()) continue
 
-            return {
-              index,
-              str: item.str,
-              isSpoken,
-              x,
-              y,
-              fontSize,
-              left,
-              top,
-              width,
-              height,
-            }
+        const itemTolerance = Math.max(3, item.height * 0.45)
+        const bucket = lineBuckets.find(
+          ({ y, tolerance }) => Math.abs(y - item.top) <= Math.max(tolerance, itemTolerance)
+        )
+
+        if (bucket) {
+          bucket.items.push(item)
+          bucket.y = (bucket.y * (bucket.items.length - 1) + item.top) / bucket.items.length
+          bucket.tolerance = Math.max(bucket.tolerance, itemTolerance)
+        } else {
+          lineBuckets.push({ y: item.top, tolerance: itemTolerance, items: [item] })
+        }
+      }
+
+      lineBuckets
+        .sort((a, b) => a.y - b.y)
+        .forEach((bucket, bucketIndex) => {
+          const spokenItems = bucket.items.sort((a, b) => a.left - b.left)
+
+          const text = spokenItems.reduce((accumulator, item, itemIndex) => {
+            const normalizedText = item.str.replace(/\s+/g, ' ').trim()
+            if (!normalizedText) return accumulator
+            if (itemIndex === 0) return normalizedText
+
+            const previousItem = spokenItems[itemIndex - 1]
+            const gap = item.left - (previousItem.left + previousItem.width)
+            const joiner = gap > previousItem.fontSize * 1.2 ? '  ' : ' '
+            return `${accumulator}${joiner}${normalizedText}`
+          }, '').trim()
+
+          if (!text) return
+
+          lines.push({
+            id: `page-${targetPageNumber}-line-${bucketIndex}`,
+            pageNumber: targetPageNumber,
+            text,
+            itemIndexes: spokenItems.map((item) => item.index),
           })
-          .sort((a: SortableTextItem, b: SortableTextItem) => {
-            if (Math.abs(a.top - b.top) > 3) return a.top - b.top
-            return a.left - b.left
-          })
+        })
 
-        const lines: ReaderLine[] = []
-        const lineBuckets: Array<{ y: number; tolerance: number; items: SortableTextItem[] }> = []
+      const lineIdByItemIndex = new Map<number, string>()
+      lines.forEach((line) => {
+        line.itemIndexes.forEach((itemIndex) => {
+          lineIdByItemIndex.set(itemIndex, line.id)
+        })
+      })
 
-        for (const item of sortableItems) {
-          if (!item.str.trim()) continue
-
-          const itemTolerance = Math.max(3, item.height * 0.45)
-          const bucket = lineBuckets.find(
-            ({ y, tolerance }) => Math.abs(y - item.top) <= Math.max(tolerance, itemTolerance)
-          )
-
-          if (bucket) {
-            bucket.items.push(item)
-            bucket.y = (bucket.y * (bucket.items.length - 1) + item.top) / bucket.items.length
-            bucket.tolerance = Math.max(bucket.tolerance, itemTolerance)
-          } else {
-            lineBuckets.push({ y: item.top, tolerance: itemTolerance, items: [item] })
+      const mappingsForPage = Array.from({ length: textContent.items.length }, (_, index) => {
+        const sortableItem = sortableItems.find((item) => item.index === index)
+        if (!sortableItem) {
+          return {
+            index,
+            pageNumber: targetPageNumber,
+            str: '',
+            isSpoken: false,
+            lineId: null,
+            x: 0,
+            y: 0,
+            fontSize: 0,
+            left: 0,
+            top: 0,
+            width: 0,
+            height: 0,
           }
         }
 
-        lineBuckets
-          .sort((a, b) => a.y - b.y)
-          .forEach((bucket, bucketIndex) => {
-            const spokenItems = bucket.items
-              .sort((a, b) => a.left - b.left)
+        return {
+          ...sortableItem,
+          lineId: lineIdByItemIndex.get(index) ?? null,
+        }
+      })
 
-            const text = spokenItems.reduce((accumulator, item, itemIndex) => {
-              const normalizedText = item.str.replace(/\s+/g, ' ').trim()
-              if (!normalizedText) return accumulator
+      return { mappingsForPage, linesForPage: lines }
+    }
 
-              if (itemIndex === 0) return normalizedText
+    const extractText = async () => {
+      try {
+        const pagesToRead = isTwoPageMode && rightDisplayPageNumber
+          ? [leftDisplayPageNumber, rightDisplayPageNumber]
+          : [leftDisplayPageNumber]
 
-              const previousItem = spokenItems[itemIndex - 1]
-              const gap = item.left - (previousItem.left + previousItem.width)
-              const joiner = gap > previousItem.fontSize * 1.2 ? '  ' : ' '
-              return `${accumulator}${joiner}${normalizedText}`
-            }, '').trim()
+        const mergedMappings: TextMapping[] = []
+        const mergedLines: ReaderLine[] = []
+        let mappingOffset = 0
 
-            if (!text) return
+        for (const targetPageNumber of pagesToRead) {
+          const { mappingsForPage, linesForPage } = await extractPageData(targetPageNumber)
+          if (isDisposed) return
 
-            lines.push({
-              id: `page-${pageNumber}-line-${bucketIndex}`,
-              text,
-              itemIndexes: spokenItems.map((item) => item.index),
-            })
-          })
+          mergedMappings.push(
+            ...mappingsForPage.map((mapping) => ({
+              ...mapping,
+              index: mapping.index + mappingOffset,
+            }))
+          )
 
-        const lineIdByItemIndex = new Map<number, string>()
-        lines.forEach((line) => {
-          line.itemIndexes.forEach((itemIndex) => {
-            lineIdByItemIndex.set(itemIndex, line.id)
-          })
-        })
+          mergedLines.push(
+            ...linesForPage.map((line) => ({
+              ...line,
+              itemIndexes: line.itemIndexes.map((itemIndex) => itemIndex + mappingOffset),
+            }))
+          )
 
-        const newMappings = Array.from({ length: textContent.items.length }, (_, index) => {
-          const sortableItem = sortableItems.find((item) => item.index === index)
-          if (!sortableItem) {
-            return {
-              index,
-              str: '',
-              isSpoken: false,
-              lineId: null,
-              x: 0,
-              y: 0,
-              fontSize: 0,
-              left: 0,
-              top: 0,
-              width: 0,
-              height: 0,
-            }
-          }
-
-          return {
-            ...sortableItem,
-            lineId: lineIdByItemIndex.get(index) ?? null,
-          }
-        })
+          mappingOffset += mappingsForPage.length
+        }
 
         if (isDisposed) return
 
-        setMappings(newMappings)
-        setPageLines(lines)
+        setMappings(mergedMappings)
+        setPageLines(mergedLines)
 
-        const lineIndexById = new Map(lines.map((line, index) => [line.id, index]))
-        const nextWordRects: WordRect[] = newMappings
+        const lineIndexById = new Map(mergedLines.map((line, index) => [line.id, index]))
+        const nextWordRects: WordRect[] = mergedMappings
           .filter((mapping) => mapping.lineId && mapping.width > 0 && mapping.height > 0)
           .map((mapping) => ({
             itemIndex: mapping.index,
+            pageNumber: mapping.pageNumber,
             lineId: mapping.lineId!,
             lineIndex: lineIndexById.get(mapping.lineId!) ?? 0,
             left: mapping.left,
@@ -592,6 +707,7 @@ export default function PdfReaderClient() {
           if (!existingRect) {
             lineRectMap.set(rect.lineId, {
               lineId: rect.lineId,
+              pageNumber: rect.pageNumber,
               lineIndex: rect.lineIndex,
               left: rect.left,
               top: rect.top,
@@ -614,13 +730,13 @@ export default function PdfReaderClient() {
 
         const pendingProgress = pendingResumeRef.current
         const nextLineIndex = pendingProgress && pendingProgress.pageNumber === pageNumber
-          ? Math.min(pendingProgress.lineIndex, Math.max(lines.length - 1, 0))
-          : Math.min(currentLineIndexRef.current, Math.max(lines.length - 1, 0))
+          ? Math.min(pendingProgress.lineIndex, Math.max(mergedLines.length - 1, 0))
+          : Math.min(currentLineIndexRef.current, Math.max(mergedLines.length - 1, 0))
 
         if (isDisposed) return
 
         setCurrentLineIndex(nextLineIndex)
-        setActiveLineId(lines[nextLineIndex]?.id ?? null)
+        setActiveLineId(mergedLines[nextLineIndex]?.id ?? null)
         saveProgress({ pageNumber, lineIndex: nextLineIndex })
 
         if (pendingProgress && pendingProgress.pageNumber === pageNumber) {
@@ -638,7 +754,16 @@ export default function PdfReaderClient() {
     return () => {
       isDisposed = true
     }
-  }, [pageNumber, pdfProxy, renderScale, saveProgress, viewMode])
+  }, [
+    isTwoPageMode,
+    leftDisplayPageNumber,
+    pageNumber,
+    pdfProxy,
+    renderScale,
+    rightDisplayPageNumber,
+    saveProgress,
+    viewMode,
+  ])
 
   const stopAudio = useCallback(() => {
     if (requestAbortRef.current) {
@@ -756,6 +881,10 @@ export default function PdfReaderClient() {
       )
       if (!trimmedLine) continue
 
+      if (text.length > 0 && text.length + trimmedLine.length > 300) {
+        break
+      }
+
       const previousChar = text.slice(-1)
       const nextLineStartsLowercase = /^[a-zа-яё]/u.test(trimmedLine)
       const previousEndsWithHyphen = /[-\u2010\u2011]$/.test(text)
@@ -789,9 +918,10 @@ export default function PdfReaderClient() {
     const line = pageLines[lineIndex]
     if (!line) {
       if (pageNumber < numPages) {
-        pendingResumeRef.current = { pageNumber: pageNumber + 1, lineIndex: 0 }
+        const step = isTwoPageMode ? 2 : 1
+        pendingResumeRef.current = { pageNumber: Math.min(pageNumber + step, numPages), lineIndex: 0 }
         pendingAutoPlayRef.current = true
-        setPageNumber((p) => p + 1)
+        setPageNumber((p) => Math.min(p + step, numPages))
       }
       return
     }
@@ -838,13 +968,22 @@ export default function PdfReaderClient() {
         throw new Error('TTS response is empty')
       }
       
-      const binaryString = window.atob(data.audio_base64)
+      const cleanBase64 = data.audio_base64.replace(/\s/g, '')
+
+      let mimeType = 'audio/mp3'
+      if (cleanBase64.startsWith('UklGR')) {
+        mimeType = 'audio/wav'
+      } else if (cleanBase64.startsWith('//N') || cleanBase64.startsWith('/+') || cleanBase64.startsWith('SUQz')) {
+        mimeType = 'audio/mp3'
+      }
+
+      const binaryString = window.atob(cleanBase64)
       const len = binaryString.length
       const bytes = new Uint8Array(len)
       for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i)
       }
-      const blob = new Blob([bytes.buffer], { type: 'audio/mp3' })
+      const blob = new Blob([bytes.buffer], { type: mimeType })
       const url = URL.createObjectURL(blob)
       objectUrlRef.current = url
 
@@ -916,10 +1055,17 @@ export default function PdfReaderClient() {
           saveProgress({ pageNumber, lineIndex: lastRange.lineIndex })
         }
 
-        if (pageNumber < numPages) {
-          pendingResumeRef.current = { pageNumber: pageNumber + 1, lineIndex: 0 }
+        const nextLineIndex = lastRange ? lastRange.lineIndex + 1 : lineIndex + 1
+
+        if (nextLineIndex < pageLines.length) {
+          pendingResumeRef.current = { pageNumber, lineIndex: nextLineIndex }
           pendingAutoPlayRef.current = true
-          setPageNumber((p) => p + 1)
+          setCurrentLineIndex(nextLineIndex)
+        } else if (pageNumber < numPages) {
+          const step = isTwoPageMode ? 2 : 1
+          pendingResumeRef.current = { pageNumber: Math.min(pageNumber + step, numPages), lineIndex: 0 }
+          pendingAutoPlayRef.current = true
+          setPageNumber((p) => Math.min(p + step, numPages))
         } else {
           saveProgress({ pageNumber, lineIndex })
           stopAudio()
@@ -936,7 +1082,7 @@ export default function PdfReaderClient() {
       console.error('TTS error:', e)
       stopAudio()
     }
-  }, [buildSpeechPayload, numPages, pageLines, pageNumber, saveProgress, stopAudio])
+  }, [buildSpeechPayload, isTwoPageMode, numPages, pageLines, pageNumber, saveProgress, stopAudio])
 
   useEffect(() => {
     if (!pendingAutoPlayRef.current) return
@@ -984,22 +1130,6 @@ export default function PdfReaderClient() {
     stopAudio()
   }, [numPages, saveProgress, stopAudio])
 
-  const isTwoPageMode = isTwoPageView && numPages > 1
-  const leftDisplayPageNumber = isTwoPageMode
-    ? pageNumber <= 1
-      ? 1
-      : pageNumber >= numPages
-        ? numPages
-        : pageNumber
-    : pageNumber
-  const rightDisplayPageNumber = isTwoPageMode
-    ? pageNumber <= 1
-      ? (numPages >= 2 ? 2 : null)
-      : pageNumber >= numPages
-        ? (numPages >= 2 ? numPages - 1 : null)
-        : (pageNumber + 1 <= numPages ? pageNumber + 1 : null)
-    : null
-
   const goForward = useCallback(() => {
     if (pageNumber >= numPages) return
     const step = isTwoPageMode ? 2 : 1
@@ -1013,28 +1143,35 @@ export default function PdfReaderClient() {
   }, [goToPage, isTwoPageMode, pageNumber])
 
   const handlePageSurfaceClickCapture = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target
+    if (target instanceof Element && target.closest('[data-word-hitbox="true"]')) {
+      return
+    }
+
     const isInsideRect = (rect: DOMRect) =>
       event.clientX >= rect.left &&
       event.clientX <= rect.right &&
       event.clientY >= rect.top &&
       event.clientY <= rect.bottom
 
-    const isBottomHalf = (rect: DOMRect) =>
-      event.clientY >= rect.top + rect.height * 0.5
+    // Keep page flip area in a narrow strip at the very bottom,
+    // so clicks on text (including lower paragraphs) prioritize TTS start.
+    const isFlipZone = (rect: DOMRect) =>
+      event.clientY >= rect.top + rect.height * 0.88
 
     if (isTwoPageMode) {
       const leftRect = leftPageSurfaceRef.current?.getBoundingClientRect() ?? null
       const rightRect = rightPageSurfaceRef.current?.getBoundingClientRect() ?? null
       if (!leftRect || !rightRect) return
 
-      if (isInsideRect(rightRect) && isBottomHalf(rightRect)) {
+      if (isInsideRect(rightRect) && isFlipZone(rightRect)) {
         event.preventDefault()
         event.stopPropagation()
         goForward()
         return
       }
 
-      if (isInsideRect(leftRect) && isBottomHalf(leftRect)) {
+      if (isInsideRect(leftRect) && isFlipZone(leftRect)) {
         event.preventDefault()
         event.stopPropagation()
         goBackward()
@@ -1047,7 +1184,7 @@ export default function PdfReaderClient() {
 
     const rect = surface.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return
-    if (!isBottomHalf(rect)) return
+    if (!isFlipZone(rect)) return
 
     if (event.clientX >= rect.left + rect.width * 0.5) {
       event.preventDefault()
@@ -1068,6 +1205,14 @@ export default function PdfReaderClient() {
     Math.max(numPages - 1, 0),
     Math.ceil((previewScrollTop + Math.max(previewViewportHeight, 1)) / previewItemApproxHeight) + previewOverscan
   )
+  const leftPageOverlayRects = overlayRects.filter((rect) => rect.pageNumber === leftDisplayPageNumber)
+  const leftPageWordRects = wordRects.filter((rect) => rect.pageNumber === leftDisplayPageNumber)
+  const rightPageOverlayRects = rightDisplayPageNumber
+    ? overlayRects.filter((rect) => rect.pageNumber === rightDisplayPageNumber)
+    : []
+  const rightPageWordRects = rightDisplayPageNumber
+    ? wordRects.filter((rect) => rect.pageNumber === rightDisplayPageNumber)
+    : []
 
   const applyZoomInput = useCallback(() => {
     const parsedPercent = Number(zoomInput)
@@ -1105,7 +1250,7 @@ export default function PdfReaderClient() {
           {library.map(book => (
             <div 
               key={book.id} 
-              className="group flex flex-col items-center p-4 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-white dark:bg-zinc-900 hover:border-indigo-500 hover:shadow-md transition-all relative"
+              className="group flex h-full flex-col items-center p-4 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-white dark:bg-zinc-900 hover:border-indigo-500 hover:shadow-md transition-all relative"
             >
               <div onClick={() => openBook(book.id)} className="cursor-pointer w-full aspect-[3/4] bg-zinc-100 dark:bg-zinc-800 rounded-lg flex items-center justify-center mb-3 group-hover:bg-indigo-50 dark:group-hover:bg-indigo-900/20 transition-colors overflow-hidden relative">
                 {book.has_cover ? (
@@ -1126,16 +1271,33 @@ export default function PdfReaderClient() {
                   className="text-sm font-medium text-center w-full px-2 py-1 outline-none border border-indigo-500 rounded bg-transparent text-zinc-900 dark:text-zinc-100"
                 />
               ) : (
-                <div className="flex items-center justify-center w-full gap-2 pl-4">
+                <div className="flex min-h-[3.5rem] items-start justify-center w-full gap-2 pl-4">
                   <h3 className="text-sm font-medium text-center line-clamp-2 text-zinc-900 dark:text-zinc-100 cursor-pointer flex-1 break-all" onClick={() => openBook(book.id)} title={book.filename}>
                     {book.filename.replace(/\.pdf$/i, '')}
                   </h3>
                   <button onClick={(e) => { e.stopPropagation(); setEditingId(book.id); setEditTitle(book.filename.replace(/\.pdf$/i, '')); }} className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-indigo-500 transition-opacity">
                      <Pencil className="w-4 h-4" />
                   </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void deleteBook(book.id)
+                    }}
+                    disabled={deletingId === book.id}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 disabled:opacity-100 disabled:text-zinc-300 transition-opacity"
+                    aria-label={`Delete ${book.filename}`}
+                  >
+                    {deletingId === book.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                  </button>
                 </div>
               )}
-              <p className="text-xs text-zinc-500 mt-2">{new Date(book.uploaded_at * 1000).toLocaleDateString()}</p>
+              <p className="mt-auto pt-3 text-xs text-zinc-500">
+                {libraryDateFormatter.format(new Date(book.uploaded_at * 1000))}
+              </p>
             </div>
           ))}
         </div>
@@ -1202,66 +1364,63 @@ export default function PdfReaderClient() {
                       ref={leftPageSurfaceRef}
                       key={`left-${leftDisplayPageNumber}-${pageFlipDirection}`}
                       onClickCapture={handlePageSurfaceClickCapture}
-                      className={`relative shadow-lg transform-gpu border border-black/5 dark:border-white/5 transition-transform origin-top scroll-smooth ${
+                      className={`relative select-none shadow-lg transform-gpu border border-black/5 dark:border-white/5 transition-transform origin-top scroll-smooth ${
                         pageFlipDirection === 'forward' ? 'pdf-page-flip-forward' : 'pdf-page-flip-backward'
                       }`}
                     >
                       <Page
                         pageNumber={leftDisplayPageNumber}
                         scale={renderScale}
-                        renderTextLayer={leftDisplayPageNumber === pageNumber}
-                        renderAnnotationLayer={leftDisplayPageNumber === pageNumber}
-                        customTextRenderer={leftDisplayPageNumber === pageNumber ? customTextRenderer : undefined}
+                        renderTextLayer={true}
+                        renderAnnotationLayer={true}
+                        customTextRenderer={customTextRenderer}
                         loading={<div className="h-[800px] w-[600px] bg-white dark:bg-zinc-900 animate-pulse" />}
                         className="bg-white dark:bg-zinc-900"
                       />
-                      {leftDisplayPageNumber === pageNumber && (
-                        <>
-                          <div className="absolute inset-0 z-30 pointer-events-none">
-                            {overlayRects.map((rect) => {
-                              const isActive = rect.lineId === activeLineId
-                              const isRead = rect.lineIndex < currentLineIndex
+                      <div className="absolute inset-0 z-30 pointer-events-none">
+                        {leftPageOverlayRects.map((rect) => {
+                          const isActive = rect.lineId === activeLineId
+                          const isRead = rect.lineIndex < currentLineIndex
 
-                              return (
-                                <div
-                                  key={rect.lineId}
-                                  className={`absolute rounded-sm ${
-                                    isActive
-                                      ? 'bg-amber-300/85 ring-1 ring-amber-500'
-                                      : isRead
-                                        ? 'bg-indigo-500/[0.09]'
-                                        : 'bg-transparent'
-                                  }`}
-                                  style={{
-                                    left: rect.left,
-                                    top: rect.top,
-                                    width: rect.width,
-                                    height: rect.height,
-                                  }}
-                                />
-                              )
-                            })}
-                          </div>
-                          <div className="absolute inset-0 z-40">
-                            {wordRects.map((rect) => (
-                              <button
-                                key={`${rect.itemIndex}-${rect.left}-${rect.top}`}
-                                type="button"
-                                onClick={() => void startReadingFromLine(rect.lineIndex, rect.itemIndex)}
-                                className="absolute rounded-[2px] bg-transparent hover:bg-indigo-300/30 focus:bg-indigo-300/30 focus:outline-none"
-                                style={{
-                                  left: rect.left,
-                                  top: rect.top,
-                                  width: rect.width,
-                                  height: rect.height,
-                                }}
-                                aria-label={`Read from word ${rect.itemIndex}`}
-                                title="Click to read from this word"
-                              />
-                            ))}
-                          </div>
-                        </>
-                      )}
+                          return (
+                            <div
+                              key={rect.lineId}
+                              className={`absolute rounded-sm ${
+                                isActive
+                                  ? 'bg-amber-300/85 ring-1 ring-amber-500'
+                                  : isRead
+                                    ? 'bg-indigo-500/[0.09]'
+                                    : 'bg-transparent'
+                              }`}
+                              style={{
+                                left: rect.left,
+                                top: rect.top,
+                                width: rect.width,
+                                height: rect.height,
+                              }}
+                            />
+                          )
+                        })}
+                      </div>
+                      <div className="absolute inset-0 z-40">
+                        {leftPageWordRects.map((rect) => (
+                          <button
+                            key={`${rect.itemIndex}-${rect.left}-${rect.top}`}
+                            type="button"
+                            data-word-hitbox="true"
+                            onClick={() => void startReadingFromLine(rect.lineIndex, rect.itemIndex)}
+                            className="absolute rounded-[2px] bg-transparent hover:bg-indigo-300/30 focus:bg-indigo-300/30 focus:outline-none"
+                            style={{
+                              left: rect.left,
+                              top: rect.top,
+                              width: rect.width,
+                              height: rect.height,
+                            }}
+                            aria-label={`Read from word ${rect.itemIndex}`}
+                            title="Click to read from this word"
+                          />
+                        ))}
+                      </div>
                     </div>
 
                     {isTwoPageMode && rightDisplayPageNumber && (
@@ -1269,18 +1428,63 @@ export default function PdfReaderClient() {
                         ref={rightPageSurfaceRef}
                         key={`right-${rightDisplayPageNumber}-${pageFlipDirection}`}
                         onClickCapture={handlePageSurfaceClickCapture}
-                        className={`relative shadow-lg transform-gpu border border-black/5 dark:border-white/5 transition-transform origin-top scroll-smooth ${
+                        className={`relative select-none shadow-lg transform-gpu border border-black/5 dark:border-white/5 transition-transform origin-top scroll-smooth ${
                           pageFlipDirection === 'forward' ? 'pdf-page-flip-forward' : 'pdf-page-flip-backward'
                         }`}
                       >
                         <Page
                           pageNumber={rightDisplayPageNumber}
                           scale={renderScale}
-                          renderTextLayer={false}
-                          renderAnnotationLayer={false}
+                          renderTextLayer={true}
+                          renderAnnotationLayer={true}
+                          customTextRenderer={customTextRenderer}
                           loading={<div className="h-[800px] w-[600px] bg-white dark:bg-zinc-900 animate-pulse" />}
                           className="bg-white dark:bg-zinc-900"
                         />
+                        <div className="absolute inset-0 z-30 pointer-events-none">
+                          {rightPageOverlayRects.map((rect) => {
+                            const isActive = rect.lineId === activeLineId
+                            const isRead = rect.lineIndex < currentLineIndex
+
+                            return (
+                              <div
+                                key={rect.lineId}
+                                className={`absolute rounded-sm ${
+                                  isActive
+                                    ? 'bg-amber-300/85 ring-1 ring-amber-500'
+                                    : isRead
+                                      ? 'bg-indigo-500/[0.09]'
+                                      : 'bg-transparent'
+                                }`}
+                                style={{
+                                  left: rect.left,
+                                  top: rect.top,
+                                  width: rect.width,
+                                  height: rect.height,
+                                }}
+                              />
+                            )
+                          })}
+                        </div>
+                        <div className="absolute inset-0 z-40">
+                          {rightPageWordRects.map((rect) => (
+                            <button
+                              key={`${rect.itemIndex}-${rect.left}-${rect.top}`}
+                              type="button"
+                              data-word-hitbox="true"
+                              onClick={() => void startReadingFromLine(rect.lineIndex, rect.itemIndex)}
+                              className="absolute rounded-[2px] bg-transparent hover:bg-indigo-300/30 focus:bg-indigo-300/30 focus:outline-none"
+                              style={{
+                                left: rect.left,
+                                top: rect.top,
+                                width: rect.width,
+                                height: rect.height,
+                              }}
+                              aria-label={`Read from word ${rect.itemIndex}`}
+                              title="Click to read from this word"
+                            />
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
