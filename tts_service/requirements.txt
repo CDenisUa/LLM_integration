@@ -1,6 +1,12 @@
 # Runtime deps for the XTTS v2 sidecar.
-# coqui-tts is the maintained fork of the original Coqui TTS (pulls torch).
-coqui-tts>=0.24.0
+# coqui-tts is the maintained fork of the original Coqui TTS.
+# torch/torchaudio must be installed explicitly (coqui-tts no longer pins them).
+torch>=2.1
+torchaudio>=2.1
+# coqui-tts 0.27.x is incompatible with transformers 5.x (uses isin_mps_friendly).
+transformers>=4.42,<5
+# [codec] pulls torchcodec, required for audio IO with torch >= 2.9.
+coqui-tts[codec]>=0.24.0
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.6

@@ -94,3 +94,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - _2026-06-17_ — Phase 7 done: `routes::books` upload/list/get/delete + extract→clean pipeline endpoints; 51 Rust tests green.
 - _2026-06-17_ — Phase 8 done: background generation pipeline (synthesizer trait, ffmpeg merge, controls, progress, audio serving); 57 Rust tests green, clean build.
 - _2026-06-17_ — Phase 9 (core) done: audiobook Library + Book detail screens, upload, live progress, chapter players with persisted position; i18n + vitest (5 frontend tests). Preview/editor, Settings, player extras deferred to Phase 10.
+- _2026-06-17_ — **Live XTTS v2 verified end-to-end** on Apple Silicon (CPU): real RU synthesis returns valid 24kHz WAV, `model_loaded: true`. Sidecar deps required pinning beyond coqui-tts: explicit `torch`/`torchaudio`, `transformers>=4.42,<5` (5.x removed `isin_mps_friendly`), and `torchcodec` (`[codec]`, needed for torch≥2.9 audio IO). Python 3.11 via Homebrew.
