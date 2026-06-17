@@ -167,7 +167,6 @@ export default function PdfReaderClient() {
   const [pageLines, setPageLines] = useState<ReaderLine[]>([])
   const [overlayRects, setOverlayRects] = useState<OverlayRect[]>([])
   const [wordRects, setWordRects] = useState<WordRect[]>([])
-  const [activeLineId, setActiveLineId] = useState<string | null>(null)
   const [currentLineIndex, setCurrentLineIndex] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isLoadingAudio, setIsLoadingAudio] = useState(false)
@@ -182,6 +181,27 @@ export default function PdfReaderClient() {
   const requestAbortRef = useRef<AbortController | null>(null)
   const requestSequenceRef = useRef(0)
   const ttsCacheRef = useRef<Map<string, TtsResponse>>(new Map())
+  const ttsPromiseRef = useRef<Map<string, Promise<TtsResponse>>>(new Map())
+  const pageExtractCacheRef = useRef<
+    Map<string, { mappingsForPage: TextMapping[]; linesForPage: ReaderLine[] }>
+  >(new Map())
+  // Gapless Web Audio playback engine state.
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const audioBufferCacheRef = useRef<Map<string, AudioBuffer>>(new Map())
+  const pageNumberRef = useRef(1)
+  const gaplessRef = useRef<{
+    token: number
+    pos: { pageNumber: number; lineIndex: number; startItemIndex?: number } | null
+    nextStartTime: number
+    aheadCount: number
+    scheduledKeys: Set<string>
+    sources: AudioBufferSourceNode[]
+    uiTimers: number[]
+    intervalId: number | null
+    pumping: boolean
+    ended: boolean
+  } | null>(null)
+  const pumpRef = useRef<() => void>(() => {})
   const readerViewportRef = useRef<HTMLDivElement | null>(null)
   const pageScrollRef = useRef<HTMLDivElement | null>(null)
   const previewScrollRef = useRef<HTMLDivElement | null>(null)
@@ -216,11 +236,141 @@ export default function PdfReaderClient() {
     setPdfProxy(null)
     setMappings([])
     setPageLines([])
+    pageExtractCacheRef.current.clear()
     setOverlayRects([])
     setWordRects([])
-    setActiveLineId(null)
+    activeLineIdRef.current = null
     setFullscreenScale(null)
   }, [])
+
+  // Extract a single page's text lines + item mappings. Cached per page+scale so
+  // it can be reused for cross-page audio prefetch and fast page flips.
+  const extractPageData = useCallback(
+    async (pdf: any, targetPageNumber: number) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const cacheKey = `${targetPageNumber}@${renderScale}`
+      const cached = pageExtractCacheRef.current.get(cacheKey)
+      if (cached) return cached
+
+      const page = await pdf.getPage(targetPageNumber)
+      const textContent = await page.getTextContent()
+      const viewport = page.getViewport({ scale: renderScale })
+
+      const sortableItems: Array<SortableTextItem & { left: number; top: number; width: number; height: number }> = textContent.items
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((item: any, index: number) => {
+          const strTrimmed = item.str.trim()
+          const tx = pdfjs.Util.transform(viewport.transform, item.transform)
+          const fontSize = Math.hypot(tx[2], tx[3])
+          const x = Number(tx[4] || 0)
+          const y = Number(tx[5] || 0)
+          const width = Math.max(Number(item.width || 0) * renderScale, fontSize * Math.max(strTrimmed.length, 1) * 0.35)
+          const height = Math.max(fontSize, Number(item.height || 0) * renderScale || 0)
+          const left = x
+          const top = y - height * 0.8
+
+          return {
+            index,
+            pageNumber: targetPageNumber,
+            str: item.str,
+            isSpoken: Boolean(strTrimmed),
+            x,
+            y,
+            fontSize,
+            left,
+            top,
+            width,
+            height,
+          }
+        })
+        .sort((a: SortableTextItem, b: SortableTextItem) => {
+          if (Math.abs(a.top - b.top) > 3) return a.top - b.top
+          return a.left - b.left
+        })
+
+      const lines: ReaderLine[] = []
+      const lineBuckets: Array<{ y: number; tolerance: number; items: SortableTextItem[] }> = []
+
+      for (const item of sortableItems) {
+        if (!item.str.trim()) continue
+
+        const itemTolerance = Math.max(3, item.height * 0.45)
+        const bucket = lineBuckets.find(
+          ({ y, tolerance }) => Math.abs(y - item.top) <= Math.max(tolerance, itemTolerance)
+        )
+
+        if (bucket) {
+          bucket.items.push(item)
+          bucket.y = (bucket.y * (bucket.items.length - 1) + item.top) / bucket.items.length
+          bucket.tolerance = Math.max(bucket.tolerance, itemTolerance)
+        } else {
+          lineBuckets.push({ y: item.top, tolerance: itemTolerance, items: [item] })
+        }
+      }
+
+      lineBuckets
+        .sort((a, b) => a.y - b.y)
+        .forEach((bucket, bucketIndex) => {
+          const spokenItems = bucket.items.sort((a, b) => a.left - b.left)
+
+          const text = spokenItems.reduce((accumulator, item, itemIndex) => {
+            const normalizedText = item.str.replace(/\s+/g, ' ').trim()
+            if (!normalizedText) return accumulator
+            if (itemIndex === 0) return normalizedText
+
+            const previousItem = spokenItems[itemIndex - 1]
+            const gap = item.left - (previousItem.left + previousItem.width)
+            const joiner = gap > previousItem.fontSize * 1.2 ? '  ' : ' '
+            return `${accumulator}${joiner}${normalizedText}`
+          }, '').trim()
+
+          if (!text) return
+
+          lines.push({
+            id: `page-${targetPageNumber}-line-${bucketIndex}`,
+            pageNumber: targetPageNumber,
+            text,
+            itemIndexes: spokenItems.map((item) => item.index),
+          })
+        })
+
+      const lineIdByItemIndex = new Map<number, string>()
+      lines.forEach((line) => {
+        line.itemIndexes.forEach((itemIndex) => {
+          lineIdByItemIndex.set(itemIndex, line.id)
+        })
+      })
+
+      const mappingsForPage = Array.from({ length: textContent.items.length }, (_, index) => {
+        const sortableItem = sortableItems.find((item) => item.index === index)
+        if (!sortableItem) {
+          return {
+            index,
+            pageNumber: targetPageNumber,
+            str: '',
+            isSpoken: false,
+            lineId: null,
+            x: 0,
+            y: 0,
+            fontSize: 0,
+            left: 0,
+            top: 0,
+            width: 0,
+            height: 0,
+          }
+        }
+
+        return {
+          ...sortableItem,
+          lineId: lineIdByItemIndex.get(index) ?? null,
+        }
+      })
+
+      const result = { mappingsForPage, linesForPage: lines }
+      pageExtractCacheRef.current.set(cacheKey, result)
+      return result
+    },
+    [renderScale]
+  )
 
   const scrollReaderShellToTop = useCallback(() => {
     if (typeof window === 'undefined') return
@@ -524,132 +674,10 @@ export default function PdfReaderClient() {
   }, [currentLineIndex])
 
   useEffect(() => {
-    activeLineIdRef.current = activeLineId
-  }, [activeLineId])
-
-  useEffect(() => {
     if (!pdfProxy || viewMode !== 'reader') return
 
     let isDisposed = false
     const currentPdf = pdfProxy
-
-    const extractPageData = async (targetPageNumber: number) => {
-      const page = await currentPdf.getPage(targetPageNumber)
-      const textContent = await page.getTextContent()
-      const viewport = page.getViewport({ scale: renderScale })
-
-      const sortableItems: Array<SortableTextItem & { left: number; top: number; width: number; height: number }> = textContent.items
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((item: any, index: number) => {
-          const strTrimmed = item.str.trim()
-          const tx = pdfjs.Util.transform(viewport.transform, item.transform)
-          const fontSize = Math.hypot(tx[2], tx[3])
-          const x = Number(tx[4] || 0)
-          const y = Number(tx[5] || 0)
-          const width = Math.max(Number(item.width || 0) * renderScale, fontSize * Math.max(strTrimmed.length, 1) * 0.35)
-          const height = Math.max(fontSize, Number(item.height || 0) * renderScale || 0)
-          const left = x
-          const top = y - height * 0.8
-
-          return {
-            index,
-            pageNumber: targetPageNumber,
-            str: item.str,
-            isSpoken: Boolean(strTrimmed),
-            x,
-            y,
-            fontSize,
-            left,
-            top,
-            width,
-            height,
-          }
-        })
-        .sort((a: SortableTextItem, b: SortableTextItem) => {
-          if (Math.abs(a.top - b.top) > 3) return a.top - b.top
-          return a.left - b.left
-        })
-
-      const lines: ReaderLine[] = []
-      const lineBuckets: Array<{ y: number; tolerance: number; items: SortableTextItem[] }> = []
-
-      for (const item of sortableItems) {
-        if (!item.str.trim()) continue
-
-        const itemTolerance = Math.max(3, item.height * 0.45)
-        const bucket = lineBuckets.find(
-          ({ y, tolerance }) => Math.abs(y - item.top) <= Math.max(tolerance, itemTolerance)
-        )
-
-        if (bucket) {
-          bucket.items.push(item)
-          bucket.y = (bucket.y * (bucket.items.length - 1) + item.top) / bucket.items.length
-          bucket.tolerance = Math.max(bucket.tolerance, itemTolerance)
-        } else {
-          lineBuckets.push({ y: item.top, tolerance: itemTolerance, items: [item] })
-        }
-      }
-
-      lineBuckets
-        .sort((a, b) => a.y - b.y)
-        .forEach((bucket, bucketIndex) => {
-          const spokenItems = bucket.items.sort((a, b) => a.left - b.left)
-
-          const text = spokenItems.reduce((accumulator, item, itemIndex) => {
-            const normalizedText = item.str.replace(/\s+/g, ' ').trim()
-            if (!normalizedText) return accumulator
-            if (itemIndex === 0) return normalizedText
-
-            const previousItem = spokenItems[itemIndex - 1]
-            const gap = item.left - (previousItem.left + previousItem.width)
-            const joiner = gap > previousItem.fontSize * 1.2 ? '  ' : ' '
-            return `${accumulator}${joiner}${normalizedText}`
-          }, '').trim()
-
-          if (!text) return
-
-          lines.push({
-            id: `page-${targetPageNumber}-line-${bucketIndex}`,
-            pageNumber: targetPageNumber,
-            text,
-            itemIndexes: spokenItems.map((item) => item.index),
-          })
-        })
-
-      const lineIdByItemIndex = new Map<number, string>()
-      lines.forEach((line) => {
-        line.itemIndexes.forEach((itemIndex) => {
-          lineIdByItemIndex.set(itemIndex, line.id)
-        })
-      })
-
-      const mappingsForPage = Array.from({ length: textContent.items.length }, (_, index) => {
-        const sortableItem = sortableItems.find((item) => item.index === index)
-        if (!sortableItem) {
-          return {
-            index,
-            pageNumber: targetPageNumber,
-            str: '',
-            isSpoken: false,
-            lineId: null,
-            x: 0,
-            y: 0,
-            fontSize: 0,
-            left: 0,
-            top: 0,
-            width: 0,
-            height: 0,
-          }
-        }
-
-        return {
-          ...sortableItem,
-          lineId: lineIdByItemIndex.get(index) ?? null,
-        }
-      })
-
-      return { mappingsForPage, linesForPage: lines }
-    }
 
     const extractText = async () => {
       try {
@@ -662,7 +690,7 @@ export default function PdfReaderClient() {
         let mappingOffset = 0
 
         for (const targetPageNumber of pagesToRead) {
-          const { mappingsForPage, linesForPage } = await extractPageData(targetPageNumber)
+          const { mappingsForPage, linesForPage } = await extractPageData(currentPdf, targetPageNumber)
           if (isDisposed) return
 
           mergedMappings.push(
@@ -736,7 +764,7 @@ export default function PdfReaderClient() {
         if (isDisposed) return
 
         setCurrentLineIndex(nextLineIndex)
-        setActiveLineId(mergedLines[nextLineIndex]?.id ?? null)
+        activeLineIdRef.current = mergedLines[nextLineIndex]?.id ?? null
         saveProgress({ pageNumber, lineIndex: nextLineIndex })
 
         if (pendingProgress && pendingProgress.pageNumber === pageNumber) {
@@ -755,6 +783,7 @@ export default function PdfReaderClient() {
       isDisposed = true
     }
   }, [
+    extractPageData,
     isTwoPageMode,
     leftDisplayPageNumber,
     pageNumber,
@@ -766,6 +795,29 @@ export default function PdfReaderClient() {
   ])
 
   const stopAudio = useCallback(() => {
+    // Tear down the gapless Web Audio scheduler.
+    const g = gaplessRef.current
+    if (g) {
+      g.token += 1
+      g.ended = true
+      g.pos = null
+      if (g.intervalId !== null) {
+        window.clearInterval(g.intervalId)
+        g.intervalId = null
+      }
+      g.uiTimers.forEach((t) => window.clearTimeout(t))
+      g.uiTimers = []
+      g.sources.forEach((source) => {
+        try {
+          source.onended = null
+          source.stop()
+        } catch {
+          /* already stopped */
+        }
+      })
+      g.sources = []
+    }
+    // Legacy HTMLAudio teardown (kept for any non-gapless paths).
     if (requestAbortRef.current) {
       requestAbortRef.current.abort()
       requestAbortRef.current = null
@@ -790,6 +842,10 @@ export default function PdfReaderClient() {
   useEffect(() => {
     return () => stopAudio()
   }, [stopAudio])
+
+  useEffect(() => {
+    pageNumberRef.current = pageNumber
+  }, [pageNumber])
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -881,7 +937,7 @@ export default function PdfReaderClient() {
       )
       if (!trimmedLine) continue
 
-      if (text.length > 0 && text.length + trimmedLine.length > 300) {
+      if (text.length > 0 && text.length + trimmedLine.length > 400) {
         break
       }
 
@@ -914,175 +970,387 @@ export default function PdfReaderClient() {
     return { text, ranges }
   }, [buildLineText, pageLines])
 
-  const startReadingFromLine = useCallback(async (lineIndex: number, startItemIndex?: number) => {
-    const line = pageLines[lineIndex]
-    if (!line) {
-      if (pageNumber < numPages) {
-        const step = isTwoPageMode ? 2 : 1
-        pendingResumeRef.current = { pageNumber: Math.min(pageNumber + step, numPages), lineIndex: 0 }
-        pendingAutoPlayRef.current = true
-        setPageNumber((p) => Math.min(p + step, numPages))
+  // Parameterized copies of the builders above, used to construct the EXACT same
+  // speech text for an upcoming page so its prefetched audio matches the cache
+  // key playback will request after the page flips. Logic mirrors buildLineText /
+  // buildSpeechPayload (which operate on the current page's state).
+  const buildLineTextFrom = useCallback(
+    (line: ReaderLine, mappingList: TextMapping[], startItemIndex?: number) => {
+      const orderedIndexes = startItemIndex === undefined
+        ? line.itemIndexes
+        : line.itemIndexes.slice(Math.max(line.itemIndexes.indexOf(startItemIndex), 0))
+
+      return orderedIndexes.reduce((accumulator, itemIndex, itemPosition) => {
+        const mapping = mappingList[itemIndex]
+        const normalizedText = mapping?.str.replace(/\s+/g, ' ').trim() ?? ''
+        if (!normalizedText) return accumulator
+
+        if (itemPosition === 0) return normalizedText
+
+        const previousMapping = mappingList[orderedIndexes[itemPosition - 1]]
+        const previousText = previousMapping?.str.replace(/\s+/g, ' ').trim() ?? ''
+        const previousEndsWithHyphen = /[-‐‑]$/.test(previousText)
+        const nextStartsLowercase = /^[a-zа-яё]/u.test(normalizedText)
+
+        if (previousEndsWithHyphen && nextStartsLowercase) {
+          return `${accumulator.slice(0, -1)}${normalizedText}`
+        }
+
+        const gap = (mapping?.x ?? 0) - ((previousMapping?.x ?? 0) + Math.max(previousMapping?.fontSize ?? 1, 1))
+        const joiner = gap > Math.max(previousMapping?.fontSize ?? 1, 1) * 1.2 ? '  ' : ' '
+        return `${accumulator}${joiner}${normalizedText}`
+      }, '').trim()
+    },
+    []
+  )
+
+  const buildSpeechPayloadFrom = useCallback(
+    (lines: ReaderLine[], mappingList: TextMapping[], startLineIndex: number, startItemIndex?: number) => {
+      const ranges: SpeechLineRange[] = []
+      let text = ''
+
+      for (let lineIndex = startLineIndex; lineIndex < lines.length; lineIndex += 1) {
+        const line = lines[lineIndex]
+        const trimmedLine = buildLineTextFrom(
+          line,
+          mappingList,
+          lineIndex === startLineIndex ? startItemIndex : undefined
+        )
+        if (!trimmedLine) continue
+
+        if (text.length > 0 && text.length + trimmedLine.length > 400) {
+          break
+        }
+
+        const previousChar = text.slice(-1)
+        const nextLineStartsLowercase = /^[a-zа-яё]/u.test(trimmedLine)
+        const previousEndsWithHyphen = /[-‐‑]$/.test(text)
+        const previousNeedsSpace = text.length > 0 && !/\s$/.test(text)
+
+        if (previousEndsWithHyphen && nextLineStartsLowercase) {
+          text = text.slice(0, -1)
+        } else if (previousNeedsSpace) {
+          const shouldTightJoin = previousChar === '' || /[—(“"']/.test(previousChar)
+          if (!shouldTightJoin) {
+            text += ' '
+          }
+        }
+
+        const startChar = text.length
+        text += trimmedLine
+        const endChar = text.length
+
+        ranges.push({ lineId: line.id, lineIndex, startChar, endChar })
       }
-      return
+
+      return { text, ranges }
+    },
+    [buildLineTextFrom]
+  )
+
+  // Fetch TTS for a text, sharing a single in-flight request and caching the
+  // result so prefetch and playback never synthesize the same text twice.
+  const fetchTts = useCallback((text: string): Promise<TtsResponse> => {
+    const cached = ttsCacheRef.current.get(text)
+    if (cached) return Promise.resolve(cached)
+
+    const inFlight = ttsPromiseRef.current.get(text)
+    if (inFlight) return inFlight
+
+    const promise = (async () => {
+      const res = await fetch(`${API_URL}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const data = (await res.json()) as TtsResponse
+      ttsCacheRef.current.set(text, data)
+      return data
+    })()
+
+    ttsPromiseRef.current.set(text, promise)
+    promise.catch(() => undefined).finally(() => ttsPromiseRef.current.delete(text))
+    return promise
+  }, [])
+
+  // Warm the cache for the upcoming segment(s) so playback continues gaplessly.
+  // `count` of 1 keeps exactly one synthesis ahead, matching the sidecar's
+  // single-model throughput without piling up concurrent requests.
+  const prefetchFrom = useCallback((startLineIndex: number, count = 1) => {
+    let index = startLineIndex
+    for (let n = 0; n < count; n += 1) {
+      if (index < 0 || index >= pageLines.length) break
+      const { text, ranges } = buildSpeechPayload(index)
+      if (!text.trim() || ranges.length === 0) break
+      fetchTts(text).catch(() => undefined)
+      const lastRange = ranges[ranges.length - 1]
+      const nextIndex = lastRange ? lastRange.lineIndex + 1 : index + 1
+      if (nextIndex <= index) break
+      index = nextIndex
     }
+  }, [buildSpeechPayload, fetchTts, pageLines])
 
-    const { text, ranges } = buildSpeechPayload(lineIndex, startItemIndex)
-    if (!text.trim() || ranges.length === 0) return
-
-    stopAudio()
-
-    const requestId = requestSequenceRef.current + 1
-    requestSequenceRef.current = requestId
-    const abortController = new AbortController()
-    requestAbortRef.current = abortController
-
-    setIsLoadingAudio(true)
-    currentLineIndexRef.current = lineIndex
-    activeLineIdRef.current = line.id
-    setCurrentLineIndex(lineIndex)
-    setActiveLineId(line.id)
-    saveProgress({ pageNumber, lineIndex })
-
+  // Cross-page gapless reading: while the current page plays, extract the next
+  // page and pre-synthesize its first segment so the page flip has no audio gap.
+  // Single-page mode only (two-page mode keeps the simpler behavior).
+  const prefetchNextPage = useCallback(async () => {
+    if (isTwoPageMode || !pdfProxy) return
+    const nextPage = pageNumber + 1
+    if (nextPage > numPages) return
     try {
-      let data: TtsResponse | undefined = ttsCacheRef.current.get(text)
-
-      if (!data) {
-        const res = await fetch(`${API_URL}/api/tts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-          signal: abortController.signal,
-        })
-
-        if (!res.ok) throw new Error(await res.text())
-
-        data = await res.json() as TtsResponse
-        ttsCacheRef.current.set(text, data)
-      }
-
-      if (requestSequenceRef.current !== requestId || abortController.signal.aborted) {
-        return
-      }
-
-      if (!data) {
-        throw new Error('TTS response is empty')
-      }
-      
-      const cleanBase64 = data.audio_base64.replace(/\s/g, '')
-
-      let mimeType = 'audio/mp3'
-      if (cleanBase64.startsWith('UklGR')) {
-        mimeType = 'audio/wav'
-      } else if (cleanBase64.startsWith('//N') || cleanBase64.startsWith('/+') || cleanBase64.startsWith('SUQz')) {
-        mimeType = 'audio/mp3'
-      }
-
-      const binaryString = window.atob(cleanBase64)
-      const len = binaryString.length
-      const bytes = new Uint8Array(len)
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i)
-      }
-      const blob = new Blob([bytes.buffer], { type: mimeType })
-      const url = URL.createObjectURL(blob)
-      objectUrlRef.current = url
-
-      if (requestSequenceRef.current !== requestId || abortController.signal.aborted) {
-        URL.revokeObjectURL(url)
-        if (objectUrlRef.current === url) {
-          objectUrlRef.current = null
-        }
-        return
-      }
-
-      const audio = new Audio(url)
-      audioRef.current = audio
-      requestAbortRef.current = null
-
-      const starts = data.alignment?.character_start_times_seconds ?? []
-      const ends = data.alignment?.character_end_times_seconds ?? []
-
-      const syncHighlightedLine = () => {
-        if (!audioRef.current) return
-
-        const currentTime = audioRef.current.currentTime
-        let currentCharIndex = -1
-
-        for (let i = 0; i < starts.length; i += 1) {
-          if (currentTime >= starts[i] && currentTime <= ends[i]) {
-            currentCharIndex = i
-            break
-          }
-        }
-
-        if (currentCharIndex !== -1) {
-          const activeRange = ranges.find(
-            (range) => currentCharIndex >= range.startChar && currentCharIndex < range.endChar
-          )
-
-          if (activeRange) {
-            if (activeLineIdRef.current !== activeRange.lineId) {
-              activeLineIdRef.current = activeRange.lineId
-              currentLineIndexRef.current = activeRange.lineIndex
-              setActiveLineId(activeRange.lineId)
-              setCurrentLineIndex(activeRange.lineIndex)
-              saveProgress({ pageNumber, lineIndex: activeRange.lineIndex })
-            }
-          }
-        }
-
-        animFrameRef.current = requestAnimationFrame(syncHighlightedLine)
-      }
-
-      audio.onplay = () => {
-        setIsPlaying(true)
-        setIsLoadingAudio(false)
-        const anchorId = line.itemIndexes[0]
-        if (anchorId !== undefined) {
-          const el = document.getElementById(`text-chunk-${anchorId}`)
-          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        }
-        animFrameRef.current = requestAnimationFrame(syncHighlightedLine)
-      }
-
-      audio.onended = () => {
-        const lastRange = ranges[ranges.length - 1]
-        if (lastRange) {
-          currentLineIndexRef.current = lastRange.lineIndex
-          activeLineIdRef.current = lastRange.lineId
-          setCurrentLineIndex(lastRange.lineIndex)
-          setActiveLineId(lastRange.lineId)
-          saveProgress({ pageNumber, lineIndex: lastRange.lineIndex })
-        }
-
-        const nextLineIndex = lastRange ? lastRange.lineIndex + 1 : lineIndex + 1
-
-        if (nextLineIndex < pageLines.length) {
-          pendingResumeRef.current = { pageNumber, lineIndex: nextLineIndex }
-          pendingAutoPlayRef.current = true
-          setCurrentLineIndex(nextLineIndex)
-        } else if (pageNumber < numPages) {
-          const step = isTwoPageMode ? 2 : 1
-          pendingResumeRef.current = { pageNumber: Math.min(pageNumber + step, numPages), lineIndex: 0 }
-          pendingAutoPlayRef.current = true
-          setPageNumber((p) => Math.min(p + step, numPages))
-        } else {
-          saveProgress({ pageNumber, lineIndex })
-          stopAudio()
-        }
-      }
-      audio.onerror = () => stopAudio()
-
-      await audio.play()
-
-    } catch (e) {
-      if (abortController.signal.aborted) {
-        return
-      }
-      console.error('TTS error:', e)
-      stopAudio()
+      const { mappingsForPage, linesForPage } = await extractPageData(pdfProxy, nextPage)
+      const { text } = buildSpeechPayloadFrom(linesForPage, mappingsForPage, 0)
+      if (text.trim()) fetchTts(text).catch(() => undefined)
+    } catch {
+      // best-effort prefetch
     }
-  }, [buildSpeechPayload, isTwoPageMode, numPages, pageLines, pageNumber, saveProgress, stopAudio])
+  }, [buildSpeechPayloadFrom, extractPageData, fetchTts, isTwoPageMode, numPages, pageNumber, pdfProxy])
+
+  // ---- Gapless Web Audio engine -------------------------------------------
+  type GaplessSegment = {
+    text: string
+    ranges: SpeechLineRange[]
+    pageNumber: number
+    anchorItemIndex?: number
+    nextPos: { pageNumber: number; lineIndex: number } | null
+  }
+
+  const getAudioCtx = useCallback(() => {
+    if (!audioCtxRef.current) {
+      const Ctor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      audioCtxRef.current = new Ctor()
+    }
+    return audioCtxRef.current
+  }, [])
+
+  // Synthesize (cached) + decode a segment's audio into an AudioBuffer.
+  const decodeSegment = useCallback(async (text: string): Promise<AudioBuffer> => {
+    const cached = audioBufferCacheRef.current.get(text)
+    if (cached) return cached
+    const data = await fetchTts(text)
+    const cleanBase64 = data.audio_base64.replace(/\s/g, '')
+    const binary = window.atob(cleanBase64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = binary.charCodeAt(i)
+    const ctx = getAudioCtx()
+    const buffer = await ctx.decodeAudioData(bytes.buffer)
+    audioBufferCacheRef.current.set(text, buffer)
+    return buffer
+  }, [fetchTts, getAudioCtx])
+
+  // Build the next speech segment at a position, advancing across pages. Uses
+  // the same builders as playback so prefetched audio matches its cache key.
+  const buildSegmentAt = useCallback(
+    async (start: { pageNumber: number; lineIndex: number; startItemIndex?: number }): Promise<GaplessSegment | null> => {
+      if (!pdfProxy) return null
+      let page = start.pageNumber
+      let lineIndex = start.lineIndex
+      while (page <= numPages) {
+        const { mappingsForPage, linesForPage } = await extractPageData(pdfProxy, page)
+        if (lineIndex < linesForPage.length) {
+          const { text, ranges } = buildSpeechPayloadFrom(
+            linesForPage,
+            mappingsForPage,
+            lineIndex,
+            page === start.pageNumber ? start.startItemIndex : undefined
+          )
+          if (text.trim() && ranges.length > 0) {
+            const lastRange = ranges[ranges.length - 1]
+            const nextLine = (lastRange ? lastRange.lineIndex : lineIndex) + 1
+            const nextPos =
+              nextLine < linesForPage.length
+                ? { pageNumber: page, lineIndex: nextLine }
+                : page + 1 <= numPages
+                  ? { pageNumber: page + 1, lineIndex: 0 }
+                  : null
+            const anchorItemIndex = linesForPage[ranges[0].lineIndex]?.itemIndexes?.[0]
+            return { text, ranges, pageNumber: page, anchorItemIndex, nextPos }
+          }
+        }
+        page += 1
+        lineIndex = 0
+      }
+      return null
+    },
+    [buildSpeechPayloadFrom, extractPageData, numPages, pdfProxy]
+  )
+
+  // When a scheduled segment is about to start, sync the UI (page, line, scroll).
+  // `durationMs` lets us advance the reading cursor line-by-line within the
+  // segment: XTTS gives no per-character alignment, so we distribute the
+  // segment's audio duration across its lines proportionally to their length.
+  const scheduleUiUpdate = useCallback(
+    (seg: GaplessSegment, delayMs: number, durationMs: number) => {
+      const g = gaplessRef.current
+      if (!g) return
+      const token = g.token
+      const timer = window.setTimeout(() => {
+        if (!gaplessRef.current || gaplessRef.current.token !== token) return
+        // This segment just started — one fewer is "ahead"; top the buffer back
+        // up immediately so we keep generating the next ones continuously.
+        gaplessRef.current.aheadCount = Math.max(0, gaplessRef.current.aheadCount - 1)
+        pumpRef.current()
+        const first = seg.ranges[0]
+        activeLineIdRef.current = first.lineId
+        currentLineIndexRef.current = first.lineIndex
+        if (seg.pageNumber !== pageNumberRef.current) {
+          setPageNumber(seg.pageNumber)
+        }
+        setCurrentLineIndex(first.lineIndex)
+        setIsLoadingAudio(false)
+        setIsPlaying(true)
+        saveProgress({ pageNumber: seg.pageNumber, lineIndex: first.lineIndex })
+        if (seg.anchorItemIndex !== undefined) {
+          requestAnimationFrame(() => {
+            const el = document.getElementById(`text-chunk-${seg.anchorItemIndex}`)
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          })
+        }
+      }, delayMs)
+      g.uiTimers.push(timer)
+
+      // Move the reading cursor onto each subsequent line at its estimated start
+      // time, so the highlight tracks the narration instead of jumping per segment.
+      const totalChars = Math.max(seg.text.length, 1)
+      for (let i = 1; i < seg.ranges.length; i += 1) {
+        const range = seg.ranges[i]
+        const lineDelay = delayMs + (range.startChar / totalChars) * durationMs
+        const lineTimer = window.setTimeout(() => {
+          if (!gaplessRef.current || gaplessRef.current.token !== token) return
+          activeLineIdRef.current = range.lineId
+          currentLineIndexRef.current = range.lineIndex
+          setCurrentLineIndex(range.lineIndex)
+          saveProgress({ pageNumber: seg.pageNumber, lineIndex: range.lineIndex })
+        }, lineDelay)
+        g.uiTimers.push(lineTimer)
+      }
+    },
+    [saveProgress]
+  )
+
+  // Keep ~lookahead seconds of audio scheduled ahead, decoding upcoming
+  // segments during playback so buffers play back-to-back without gaps.
+  const pumpSchedule = useCallback(async () => {
+    // Keep this many segments generated/scheduled ahead of the current one.
+    const SEGMENTS_AHEAD = 2
+    const g = gaplessRef.current
+    if (!g || g.pumping || g.ended || !g.pos) return
+    g.pumping = true
+    const ctx = getAudioCtx()
+    try {
+      while (g.pos && !g.ended && g.aheadCount <= SEGMENTS_AHEAD) {
+        const token = g.token
+        const seg = await buildSegmentAt(g.pos)
+        if (!gaplessRef.current || gaplessRef.current.token !== token) return
+        if (!seg) {
+          const endDelay = Math.max(0, (g.nextStartTime - ctx.currentTime) * 1000)
+          g.uiTimers.push(
+            window.setTimeout(() => {
+              if (gaplessRef.current?.token === token) setIsPlaying(false)
+            }, endDelay)
+          )
+          g.ended = true
+          break
+        }
+
+        // Never schedule the same segment twice (guards against any race).
+        const segKey = `${seg.pageNumber}:${seg.ranges[0].lineIndex}`
+        if (g.scheduledKeys.has(segKey)) {
+          g.pos = seg.nextPos
+          if (!g.pos) g.ended = true
+          continue
+        }
+
+        let buffer: AudioBuffer
+        try {
+          buffer = await decodeSegment(seg.text)
+        } catch {
+          g.pos = seg.nextPos
+          if (!g.pos) g.ended = true
+          continue
+        }
+        if (!gaplessRef.current || gaplessRef.current.token !== token) return
+
+        const startAt = Math.max(g.nextStartTime, ctx.currentTime + 0.1)
+        const source = ctx.createBufferSource()
+        source.buffer = buffer
+        source.connect(ctx.destination)
+        source.start(startAt)
+        g.sources.push(source)
+        source.onended = () => {
+          if (gaplessRef.current) {
+            gaplessRef.current.sources = gaplessRef.current.sources.filter((s) => s !== source)
+          }
+        }
+
+        scheduleUiUpdate(seg, Math.max(0, (startAt - ctx.currentTime) * 1000), buffer.duration * 1000)
+        g.scheduledKeys.add(segKey)
+        g.aheadCount += 1
+        g.nextStartTime = startAt + buffer.duration
+        g.pos = seg.nextPos
+        if (!g.pos) {
+          const endDelay = Math.max(0, (g.nextStartTime - ctx.currentTime) * 1000)
+          g.uiTimers.push(
+            window.setTimeout(() => {
+              if (gaplessRef.current?.token === token) setIsPlaying(false)
+            }, endDelay)
+          )
+          g.ended = true
+        }
+      }
+    } finally {
+      if (gaplessRef.current) gaplessRef.current.pumping = false
+    }
+  }, [buildSegmentAt, decodeSegment, getAudioCtx, scheduleUiUpdate])
+
+  useEffect(() => {
+    pumpRef.current = () => {
+      void pumpSchedule()
+    }
+  }, [pumpSchedule])
+
+  const startReadingFromLine = useCallback(
+    async (lineIndex: number, startItemIndex?: number) => {
+      if (!pdfProxy) return
+      stopAudio()
+
+      const ctx = getAudioCtx()
+      try {
+        await ctx.resume()
+      } catch {
+        /* resume best-effort */
+      }
+
+      const token = (gaplessRef.current?.token ?? 0) + 1
+      const intervalId = window.setInterval(() => {
+        void pumpSchedule()
+      }, 700)
+      gaplessRef.current = {
+        token,
+        pos: { pageNumber, lineIndex, startItemIndex },
+        nextStartTime: ctx.currentTime + 0.15,
+        aheadCount: 0,
+        scheduledKeys: new Set(),
+        sources: [],
+        uiTimers: [],
+        intervalId,
+        pumping: false,
+        ended: false,
+      }
+
+      setIsLoadingAudio(true)
+      setIsPlaying(true)
+      currentLineIndexRef.current = lineIndex
+      setCurrentLineIndex(lineIndex)
+      saveProgress({ pageNumber, lineIndex })
+
+      void pumpSchedule()
+    },
+    [getAudioCtx, pageNumber, pdfProxy, pumpSchedule, saveProgress, stopAudio]
+  )
 
   useEffect(() => {
     if (!pendingAutoPlayRef.current) return
@@ -1379,15 +1647,15 @@ export default function PdfReaderClient() {
                       />
                       <div className="absolute inset-0 z-30 pointer-events-none">
                         {leftPageOverlayRects.map((rect) => {
-                          const isActive = rect.lineId === activeLineId
                           const isRead = rect.lineIndex < currentLineIndex
+                          const isActive = isPlaying && rect.lineIndex === currentLineIndex
 
                           return (
                             <div
                               key={rect.lineId}
-                              className={`absolute rounded-sm ${
+                              className={`absolute rounded-sm transition-colors duration-200 ${
                                 isActive
-                                  ? 'bg-amber-300/85 ring-1 ring-amber-500'
+                                  ? 'bg-indigo-400/20 ring-1 ring-indigo-400/40'
                                   : isRead
                                     ? 'bg-indigo-500/[0.09]'
                                     : 'bg-transparent'
@@ -1398,7 +1666,14 @@ export default function PdfReaderClient() {
                                 width: rect.width,
                                 height: rect.height,
                               }}
-                            />
+                            >
+                              {isActive && (
+                                <span
+                                  aria-hidden="true"
+                                  className="absolute -left-1 top-0 h-full w-[3px] rounded-full bg-indigo-500 animate-pulse"
+                                />
+                              )}
+                            </div>
                           )
                         })}
                       </div>
@@ -1443,15 +1718,15 @@ export default function PdfReaderClient() {
                         />
                         <div className="absolute inset-0 z-30 pointer-events-none">
                           {rightPageOverlayRects.map((rect) => {
-                            const isActive = rect.lineId === activeLineId
                             const isRead = rect.lineIndex < currentLineIndex
+                            const isActive = isPlaying && rect.lineIndex === currentLineIndex
 
                             return (
                               <div
                                 key={rect.lineId}
-                                className={`absolute rounded-sm ${
+                                className={`absolute rounded-sm transition-colors duration-200 ${
                                   isActive
-                                    ? 'bg-amber-300/85 ring-1 ring-amber-500'
+                                    ? 'bg-indigo-400/20 ring-1 ring-indigo-400/40'
                                     : isRead
                                       ? 'bg-indigo-500/[0.09]'
                                       : 'bg-transparent'
@@ -1462,7 +1737,14 @@ export default function PdfReaderClient() {
                                   width: rect.width,
                                   height: rect.height,
                                 }}
-                              />
+                              >
+                                {isActive && (
+                                  <span
+                                    aria-hidden="true"
+                                    className="absolute -left-1 top-0 h-full w-[3px] rounded-full bg-indigo-500 animate-pulse"
+                                  />
+                                )}
+                              </div>
                             )
                           })}
                         </div>
