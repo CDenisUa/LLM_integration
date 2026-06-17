@@ -17,7 +17,7 @@ pub fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     let mut chunks: Vec<String> = Vec::new();
     let mut cur = String::new();
 
-    let mut flush = |cur: &mut String, chunks: &mut Vec<String>| {
+    let flush = |cur: &mut String, chunks: &mut Vec<String>| {
         let trimmed = cur.trim();
         if !trimmed.is_empty() {
             chunks.push(trimmed.to_string());

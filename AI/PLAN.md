@@ -63,11 +63,11 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - [x] `GET /books/:id/chapters`; book asset layout `storage/books/<id>/{original,cover}`.
 - [x] **Tests:** 3 tests over extract→clean flow (in-memory DB + temp files), idempotent re-clean, format dispatch; 51 Rust tests total green.
 
-## Phase 8 — Generation pipeline (background worker) ⬜
-- [ ] `jobs` worker: pending chunk → local TTS → wav; chapter merge (ffmpeg) → mp3; book→generated.
-- [ ] Controls: pause / resume / retry chunk / regenerate chapter|book / delete audio.
-- [ ] Progress reporting (poll or SSE): chapter, chunk, %, duration, errors.
-- [ ] **Tests:** pipeline orchestration with a fake `TtsEngine`; failure-continues-safely.
+## Phase 8 — Generation pipeline (background worker) ✅
+- [x] `tts_client::SpeechSynthesizer` trait + `LocalSynthesizer` (sidecar); `audio::merge_wavs_to_mp3` (ffmpeg).
+- [x] `pipeline::generate_book` generic over synthesizer: pending chunk → wav → chapter merge → mp3 → book status; cancel flag for pause; failure continues safely.
+- [x] Endpoints: `generate`/`pause-generation`/`resume-generation`/`retry`/`regenerate` + `GET /books/:id/generation` (progress summary); job registry in `AppState`. Listening progress `GET/POST /progress/:id`. `/api/audio` serves generated files.
+- [x] **Tests:** 6 new (full generate→generated, failure-continues→failed, cancel→resumable, progress summarize, ffmpeg merge, empty-input); 57 Rust tests total green; clean build.
 
 ## Phase 9 — Frontend screens ⬜
 - [ ] Library, Upload, Book details, Text preview/editor, Generation progress, Audio player, Settings.
@@ -90,3 +90,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - _2026-06-17_ — Phase 5 done: `chapters` (marker detect + virtual split) and `chunking` (sentence-safe); 44 Rust tests green.
 - _2026-06-17_ — Phase 6 done: sqlx SQLite + migrations + models + CRUD; `AppState` wired into router; 48 Rust tests green.
 - _2026-06-17_ — Phase 7 done: `routes::books` upload/list/get/delete + extract→clean pipeline endpoints; 51 Rust tests green.
+- _2026-06-17_ — Phase 8 done: background generation pipeline (synthesizer trait, ffmpeg merge, controls, progress, audio serving); 57 Rust tests green, clean build.

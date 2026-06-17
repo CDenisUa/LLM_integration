@@ -229,6 +229,33 @@ pub async fn next_pending_chunk(db: &Db, book_id: &str) -> Result<Option<Chunk>,
     .await
 }
 
+pub async fn list_chunks_for_chapter(db: &Db, chapter_id: &str) -> Result<Vec<Chunk>, sqlx::Error> {
+    sqlx::query_as::<_, Chunk>("SELECT * FROM chunks WHERE chapter_id = ? ORDER BY order_index")
+        .bind(chapter_id)
+        .fetch_all(db)
+        .await
+}
+
+/// Reset failed chunks back to pending (for retry).
+pub async fn reset_failed_chunks(db: &Db, book_id: &str) -> Result<u64, sqlx::Error> {
+    let res = sqlx::query(
+        "UPDATE chunks SET status = 'pending', error = NULL WHERE book_id = ? AND status = 'failed'",
+    )
+    .bind(book_id)
+    .execute(db)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Reset every chunk of a book back to pending (for full regeneration).
+pub async fn reset_all_chunks(db: &Db, book_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE chunks SET status = 'pending', error = NULL, audio_path = NULL WHERE book_id = ?")
+        .bind(book_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn update_chunk_status(
     db: &Db,
     id: &str,

@@ -60,6 +60,7 @@ pub mod book_status {
 }
 
 /// Chunk statuses (spec §6).
+#[allow(dead_code)] // full status set kept for clarity; some are SQL defaults
 pub mod chunk_status {
     pub const PENDING: &str = "pending";
     pub const GENERATING: &str = "generating";

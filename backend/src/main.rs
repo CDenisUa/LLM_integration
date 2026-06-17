@@ -4,6 +4,7 @@ use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // Services
+mod audio;
 mod chapters;
 mod chunking;
 mod clean;
@@ -11,8 +12,10 @@ mod db;
 mod extract;
 mod models;
 mod normalize;
+mod pipeline;
 mod routes;
 mod state;
+mod tts_client;
 // Types
 use state::AppState;
 
@@ -36,7 +39,7 @@ async fn main() {
     let db = db::connect(&database_url)
         .await
         .expect("failed to open library database");
-    let state = AppState { db };
+    let state = AppState::new(db);
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

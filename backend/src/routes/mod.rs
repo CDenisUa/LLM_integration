@@ -4,7 +4,9 @@ use axum::{routing::{get, post}, Router};
 mod books;
 mod chat;
 mod generate;
+mod generation;
 mod pipeline;
+mod progress;
 mod tts;
 mod pdf;
 // Types
@@ -26,6 +28,13 @@ pub fn router() -> Router<AppState> {
         .route("/books/:id/extract", post(books::extract_book))
         .route("/books/:id/clean", post(books::clean_book))
         .route("/books/:id/chapters", get(books::list_chapters))
+        .route("/books/:id/generate", post(generation::generate))
+        .route("/books/:id/pause-generation", post(generation::pause))
+        .route("/books/:id/resume-generation", post(generation::resume))
+        .route("/books/:id/retry", post(generation::retry))
+        .route("/books/:id/regenerate", post(generation::regenerate))
+        .route("/books/:id/generation", get(generation::generation_progress))
+        .route("/progress/:id", get(progress::get_progress).post(progress::set_progress))
         .route("/tts", post(tts::tts_handler))
         .route("/tts/engines", get(tts::list_engines))
         .route("/tts/voices", get(tts::list_voices))
@@ -33,6 +42,7 @@ pub fn router() -> Router<AppState> {
         .route("/pdf", axum::routing::get(pdf::list_pdfs))
         .route("/pdf/:id", axum::routing::put(pdf::update_pdf).delete(pdf::delete_pdf))
         .route("/pdf/upload", post(pdf::upload_pdf))
+        .nest_service("/audio", tower_http::services::ServeDir::new("storage/books"))
         .nest_service("/pdf/files", tower_http::services::ServeDir::new("storage/pdfs"))
         .nest_service("/pdf/covers", tower_http::services::ServeDir::new("storage/covers"))
 }
