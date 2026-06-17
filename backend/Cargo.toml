@@ -19,6 +19,10 @@ tokio-stream = "0.1"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
+encoding_rs = "0.8"
+chardetng = "0.1"
+quick-xml = "0.36"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 wiremock = "0.6"

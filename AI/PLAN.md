@@ -34,11 +34,12 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - [x] New routes: `GET /api/tts/engines`, `GET /api/tts/voices`, `POST /api/tts/test-voice` (defaults to RU test phrase).
 - [x] Optional sidecar auto-start in `start-dev.sh` (only if `tts_service/.venv` exists).
 
-## Phase 3 — Text extraction ⬜ (TDD)
-- [ ] `extract::txt` — encoding detect + line-break normalize.
-- [ ] `extract::epub` — metadata, chapter order, HTML strip, paragraphs.
-- [ ] `extract::fb2` — XML parse, title/author, body sections.
-- [ ] **Tests:** small fixture files per format → expected text/metadata.
+## Phase 3 — Text extraction ✅ (TDD)
+- [x] `extract::txt` — chardetng encoding detect (UTF-8/CP1251) + `normalize_whitespace`.
+- [x] `extract::html` — `html_to_text` (paragraph-preserving, script/style drop) + `first_heading`.
+- [x] `extract::epub` — zip + container.xml → OPF → spine order, metadata, HTML strip.
+- [x] `extract::fb2` — quick-xml streaming, title/author, nested body sections.
+- [x] **Tests:** 21 Rust tests total green (incl. in-memory epub fixture, CP1251 decode, ё preserved).
 
 ## Phase 4 — Cleaning + normalization ⬜ (TDD)
 - [ ] `clean` — page numbers, headers/footers, hyphenation fix, HTML entities, URLs/emails, footnote markers, quote/punct normalize. **Preserve RU dialogue dashes, paragraphs, chapter titles, ё.**
@@ -82,3 +83,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - _2026-06-17_ — Plan + architecture authored. Decisions locked: XTTS v2 sidecar, Rust kept, SQLite, full scope, TDD.
 - _2026-06-17_ — Phase 0 done (baseline green, `.env.example` extended). Phase 1 done: XTTS v2 sidecar with 6 passing contract tests (no model load), `setup.sh`, README.
 - _2026-06-17_ — Phase 2 done: Rust `local` provider + engines/voices/test-voice routes; 4 wiremock-backed tests (5 total Rust tests green); sidecar auto-start in start-dev.sh.
+- _2026-06-17_ — Phase 3 done: `extract` module (txt/html/fb2/epub) with shared `normalize_whitespace`; 21 Rust tests green.
