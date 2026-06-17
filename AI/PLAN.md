@@ -46,10 +46,10 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - [x] `normalize` — RU/EN abbreviation expansion (т.е., т.к., и т.д., ул., стр., №, e.g., Mr.…); `г.` left ambiguous; numbers kept as digits.
 - [x] **Tests:** 16 new unit tests incl. dialogue-preservation + ё regression; 33 Rust tests total green.
 
-## Phase 5 — Chapter detection + chunking ⬜ (TDD)
-- [ ] `chapters` — marker detection (Глава/Часть/Пролог/Эпилог/Chapter/Part…), virtual split by size fallback.
-- [ ] `chunking` — sentence-safe split, paragraph-preferred, 1.5–3k chars configurable, ordered, independently regeneratable.
-- [ ] **Tests:** marker variants, no-marker fallback, no mid-sentence cuts.
+## Phase 5 — Chapter detection + chunking ✅ (TDD)
+- [x] `chapters` — `detect_chapters` (Глава/Часть/Пролог/Эпилог/Chapter/Part…, numbered+standalone), `split_into_virtual_chapters` fallback, `chapterize` for sections; prose sentences not misdetected as headings.
+- [x] `chunking` — `chunk_text` (paragraph-preferred, sentence-safe via `split_sentences`), ordered, oversized-sentence emitted whole; `DEFAULT_MAX_CHUNK_CHARS=2500`.
+- [x] **Tests:** 11 new unit tests (marker variants, no-marker fallback, no mid-sentence cuts, punctuation variants); 44 Rust tests total green.
 
 ## Phase 6 — DB + models + migrations ⬜ (TDD)
 - [ ] `sqlx` pool + migrations; `models` for Book/Chapter/Chunk/Progress/Settings.
@@ -85,3 +85,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - _2026-06-17_ — Phase 2 done: Rust `local` provider + engines/voices/test-voice routes; 4 wiremock-backed tests (5 total Rust tests green); sidecar auto-start in start-dev.sh.
 - _2026-06-17_ — Phase 3 done: `extract` module (txt/html/fb2/epub) with shared `normalize_whitespace`; 21 Rust tests green.
 - _2026-06-17_ — Phase 4 done: `clean` + `normalize` modules; dialogue/ё preserved; 33 Rust tests green.
+- _2026-06-17_ — Phase 5 done: `chapters` (marker detect + virtual split) and `chunking` (sentence-safe); 44 Rust tests green.

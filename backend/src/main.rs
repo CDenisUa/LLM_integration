@@ -4,6 +4,8 @@ use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // Services
+mod chapters;
+mod chunking;
 mod clean;
 mod extract;
 mod normalize;
