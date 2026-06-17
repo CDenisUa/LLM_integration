@@ -69,11 +69,13 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - [x] Endpoints: `generate`/`pause-generation`/`resume-generation`/`retry`/`regenerate` + `GET /books/:id/generation` (progress summary); job registry in `AppState`. Listening progress `GET/POST /progress/:id`. `/api/audio` serves generated files.
 - [x] **Tests:** 6 new (full generate→generated, failure-continues→failed, cancel→resumable, progress summarize, ffmpeg merge, empty-input); 57 Rust tests total green; clean build.
 
-## Phase 9 — Frontend screens ⬜
-- [ ] Library, Upload, Book details, Text preview/editor, Generation progress, Audio player, Settings.
-- [ ] zustand stores; HTML5 player (speed, ±10s, chapter nav, persisted position, continue listening).
-- [ ] Dark-first, minimal, personal-library feel (spec §18).
-- [ ] vitest for stores; add Chepio footer credit strip (global rule).
+## Phase 9 — Frontend screens 🟡
+- [x] Library (`/audiobooks`) with upload + delete; Book details (`/audiobooks/:id`) with status, actions (extract/clean/generate/pause/retry), live generation progress (polling), chapter list with HTML5 players.
+- [x] Listening position persisted per chapter (save on pause/ended, restore on load).
+- [x] i18n (en/ru) entries, nav section, `services/audiobooks`, `utils/format`; dark-first minimal styling matching existing app.
+- [x] vitest set up; `utils/format` covered (5 tests pass).
+- [ ] Dedicated text preview/editor screen + Settings screen → deferred to Phase 10.
+- [ ] Player extras (speed, ±10s, chapter nav) + Chepio footer credit strip → Phase 10.
 
 ## Phase 10 — Polish & future hooks ⬜
 - [ ] Cover extraction, exports (mp3; later m4b), settings persistence.
@@ -91,3 +93,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - _2026-06-17_ — Phase 6 done: sqlx SQLite + migrations + models + CRUD; `AppState` wired into router; 48 Rust tests green.
 - _2026-06-17_ — Phase 7 done: `routes::books` upload/list/get/delete + extract→clean pipeline endpoints; 51 Rust tests green.
 - _2026-06-17_ — Phase 8 done: background generation pipeline (synthesizer trait, ffmpeg merge, controls, progress, audio serving); 57 Rust tests green, clean build.
+- _2026-06-17_ — Phase 9 (core) done: audiobook Library + Book detail screens, upload, live progress, chapter players with persisted position; i18n + vitest (5 frontend tests). Preview/editor, Settings, player extras deferred to Phase 10.

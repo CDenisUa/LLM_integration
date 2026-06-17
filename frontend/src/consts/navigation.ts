@@ -6,6 +6,12 @@ import type { NavItem } from '@/types'
 export function getNavItems(t: Translations): NavItem[] {
   return [
     {
+      label: t.nav.audiobooks,
+      children: [
+        { label: t.nav.library, href: '/audiobooks' },
+      ],
+    },
+    {
       label: t.nav.llmChat,
       children: [
         { label: t.nav.gemini, href: '/llm-chat' },
