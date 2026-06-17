@@ -58,7 +58,7 @@ fn local_language() -> String {
 }
 
 fn local_speaker() -> String {
-    env::var("XTTS_SPEAKER").unwrap_or_else(|_| "Ana Florence".to_string())
+    env::var("XTTS_SPEAKER").unwrap_or_else(|_| "Viktor Eka".to_string())
 }
 
 fn local_speed() -> f32 {
@@ -86,12 +86,22 @@ pub async fn tts_handler(
         return Err((StatusCode::BAD_REQUEST, "Text is empty".to_string()));
     }
 
+    // Strip tables, code, special characters and dots/ellipses before synthesis,
+    // so the engine reads cleaner prose and we send fewer characters per request.
+    let text = crate::normalize::sanitize_for_speech(&payload.text);
+    if text.trim().is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "No speakable text after filtering".to_string(),
+        ));
+    }
+
     let provider = resolve_provider();
 
     // Cache check
     let mut hasher = Sha256::new();
     hasher.update(provider.as_bytes());
-    hasher.update(payload.text.as_bytes());
+    hasher.update(text.as_bytes());
 
     if provider == "local" {
         hasher.update(local_language().as_bytes());
@@ -141,31 +151,31 @@ pub async fn tts_handler(
         synthesize_local(
             &client,
             &local_base_url(),
-            &payload.text,
+            &text,
             &local_language(),
             &local_speaker(),
             local_speed(),
         )
         .await?
     } else if provider == "google" {
-        synthesize_google_tts(&client, &payload.text).await?
+        synthesize_google_tts(&client, &text).await?
     } else if provider == "resemble" {
-        match synthesize_resemble_tts(&client, &payload.text).await {
+        match synthesize_resemble_tts(&client, &text).await {
             Ok(v) => v,
             Err((status, msg)) => {
                 if msg.to_lowercase().contains("quota") {
-                    synthesize_google_tts(&client, &payload.text).await?
+                    synthesize_google_tts(&client, &text).await?
                 } else {
                     return Err((status, msg));
                 }
             }
         }
     } else {
-        match synthesize_elevenlabs_tts(&client, &payload.text).await {
+        match synthesize_elevenlabs_tts(&client, &text).await {
             Ok(v) => v,
             Err((status, msg)) => {
                 if msg.to_lowercase().contains("quota_exceeded") {
-                    synthesize_google_tts(&client, &payload.text).await?
+                    synthesize_google_tts(&client, &text).await?
                 } else {
                     return Err((status, msg));
                 }
