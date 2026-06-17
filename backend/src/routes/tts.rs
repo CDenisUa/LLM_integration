@@ -11,6 +11,74 @@ pub struct TtsRequest {
     pub text: String,
 }
 
+#[derive(Deserialize)]
+pub struct TestVoiceRequest {
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub speaker: Option<String>,
+    #[serde(default)]
+    pub speed: Option<f32>,
+}
+
+/// XTTS v2 supported languages, surfaced to the frontend voice/engine pickers.
+const XTTS_LANGUAGES: [&str; 17] = [
+    "en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu",
+    "ko", "hi",
+];
+
+const RU_VOICE_TEST_TEXT: &str =
+    "Это тест русской озвучки. Если голос звучит хорошо, можно начинать генерацию книги.";
+
+fn resolve_provider() -> &'static str {
+    let raw = env::var("TTS_PROVIDER")
+        .unwrap_or_else(|_| "local".to_string())
+        .to_lowercase();
+    if raw.starts_with("local") || raw.starts_with("xtts") || raw.starts_with("coqui") {
+        "local"
+    } else if raw.starts_with("google") || raw.starts_with("vertex") {
+        "google"
+    } else if raw.starts_with("resemble") {
+        "resemble"
+    } else if raw.starts_with("eleven") {
+        "elevenlabs"
+    } else {
+        "local"
+    }
+}
+
+fn local_base_url() -> String {
+    env::var("TTS_LOCAL_URL").unwrap_or_else(|_| "http://127.0.0.1:8123".to_string())
+}
+
+fn local_language() -> String {
+    env::var("XTTS_LANGUAGE").unwrap_or_else(|_| "ru".to_string())
+}
+
+fn local_speaker() -> String {
+    env::var("XTTS_SPEAKER").unwrap_or_else(|_| "Ana Florence".to_string())
+}
+
+fn local_speed() -> f32 {
+    env::var("XTTS_SPEED")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(1.0)
+}
+
+/// Shape the frontend already expects: base64 audio + (empty) alignment.
+fn audio_payload(audio_base64: String) -> serde_json::Value {
+    serde_json::json!({
+        "audio_base64": audio_base64,
+        "alignment": {
+            "character_start_times_seconds": [],
+            "character_end_times_seconds": []
+        }
+    })
+}
+
 pub async fn tts_handler(
     Json(payload): Json<TtsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -18,25 +86,18 @@ pub async fn tts_handler(
         return Err((StatusCode::BAD_REQUEST, "Text is empty".to_string()));
     }
 
-    let provider_raw = env::var("TTS_PROVIDER")
-        .unwrap_or_else(|_| "google".to_string())
-        .to_lowercase();
-    let provider = if provider_raw.starts_with("google") || provider_raw.starts_with("vertex") {
-        "google"
-    } else if provider_raw.starts_with("resemble") {
-        "resemble"
-    } else if provider_raw.starts_with("eleven") {
-        "elevenlabs"
-    } else {
-        "google"
-    };
+    let provider = resolve_provider();
 
     // Cache check
     let mut hasher = Sha256::new();
     hasher.update(provider.as_bytes());
     hasher.update(payload.text.as_bytes());
 
-    if provider == "google" {
+    if provider == "local" {
+        hasher.update(local_language().as_bytes());
+        hasher.update(local_speaker().as_bytes());
+        hasher.update(local_speed().to_le_bytes());
+    } else if provider == "google" {
         let language_code = env::var("GOOGLE_TTS_LANGUAGE_CODE")
             .unwrap_or_else(|_| "ru-RU".to_string());
         let voice_name = env::var("GOOGLE_TTS_VOICE")
@@ -76,7 +137,17 @@ pub async fn tts_handler(
     }
 
     let client = Client::new();
-    let json_resp = if provider == "google" {
+    let json_resp = if provider == "local" {
+        synthesize_local(
+            &client,
+            &local_base_url(),
+            &payload.text,
+            &local_language(),
+            &local_speaker(),
+            local_speed(),
+        )
+        .await?
+    } else if provider == "google" {
         synthesize_google_tts(&client, &payload.text).await?
     } else if provider == "resemble" {
         match synthesize_resemble_tts(&client, &payload.text).await {
@@ -388,4 +459,182 @@ async fn synthesize_elevenlabs_tts(
     res.json()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Call the local XTTS v2 sidecar (`tts_service/`) and return base64 WAV audio.
+async fn synthesize_local(
+    client: &Client,
+    base_url: &str,
+    text: &str,
+    language: &str,
+    speaker: &str,
+    speed: f32,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let url = format!("{}/synthesize", base_url.trim_end_matches('/'));
+    let req_body = serde_json::json!({
+        "text": text,
+        "language": language,
+        "speaker": speaker,
+        "speed": speed,
+    });
+
+    let res = client
+        .post(url)
+        .json(&req_body)
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("Local TTS sidecar unreachable: {}", e),
+            )
+        })?;
+
+    if !res.status().is_success() {
+        let err_text = res.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Local TTS Error: {}", err_text),
+        ));
+    }
+
+    let audio_bytes = res
+        .bytes()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let audio_base64 = general_purpose::STANDARD.encode(audio_bytes);
+
+    Ok(audio_payload(audio_base64))
+}
+
+/// GET /api/tts/engines — engines available to the frontend.
+pub async fn list_engines() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "engines": [
+            {
+                "id": "local",
+                "name": "Coqui XTTS v2 (local)",
+                "languages": XTTS_LANGUAGES,
+                "active": resolve_provider() == "local"
+            }
+        ]
+    }))
+}
+
+/// GET /api/tts/voices — proxy the local sidecar's voice list.
+pub async fn list_voices() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let client = Client::new();
+    let url = format!("{}/voices", local_base_url().trim_end_matches('/'));
+    let res = client.get(url).send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Local TTS sidecar unreachable: {}", e),
+        )
+    })?;
+    if !res.status().is_success() {
+        let err_text = res.text().await.unwrap_or_default();
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, err_text));
+    }
+    let value: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(value))
+}
+
+/// POST /api/tts/test-voice — synthesize a short sample (defaults to the RU test phrase).
+pub async fn test_voice(
+    Json(payload): Json<TestVoiceRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let text = payload
+        .text
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| RU_VOICE_TEST_TEXT.to_string());
+    let language = payload.language.unwrap_or_else(local_language);
+    let speaker = payload.speaker.unwrap_or_else(local_speaker);
+    let speed = payload.speed.unwrap_or_else(local_speed);
+
+    let client = Client::new();
+    let value = synthesize_local(&client, &local_base_url(), &text, &language, &speaker, speed).await?;
+    Ok(Json(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn local_synthesis_returns_base64_wav() {
+        let server = MockServer::start().await;
+        let wav: &[u8] = b"RIFF....WAVEfake-bytes";
+
+        Mock::given(method("POST"))
+            .and(path("/synthesize"))
+            .and(body_json(serde_json::json!({
+                "text": "Привет",
+                "language": "ru",
+                "speaker": "Ana Florence",
+                "speed": 1.0
+            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "audio/wav")
+                    .set_body_bytes(wav.to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let value = synthesize_local(&client, &server.uri(), "Привет", "ru", "Ana Florence", 1.0)
+            .await
+            .expect("synthesis should succeed");
+
+        let b64 = value["audio_base64"].as_str().expect("audio_base64 present");
+        let decoded = general_purpose::STANDARD.decode(b64).expect("valid base64");
+        assert_eq!(decoded, wav);
+        // alignment is present (empty) so the existing frontend shape holds
+        assert!(value["alignment"]["character_start_times_seconds"].is_array());
+    }
+
+    #[tokio::test]
+    async fn local_synthesis_propagates_sidecar_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/synthesize"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("model not loaded"))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let err = synthesize_local(&client, &server.uri(), "x", "ru", "spk", 1.0)
+            .await
+            .expect_err("should propagate error");
+        assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(err.1.contains("model not loaded"));
+    }
+
+    #[tokio::test]
+    async fn local_synthesis_reports_unreachable_sidecar() {
+        let client = Client::new();
+        // Nothing is listening on this port.
+        let err = synthesize_local(&client, "http://127.0.0.1:1", "x", "ru", "spk", 1.0)
+            .await
+            .expect_err("should fail to connect");
+        assert_eq!(err.0, StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn resolve_provider_defaults_to_local() {
+        // Aliases map onto the local engine.
+        for raw in ["local", "xtts-v2", "coqui"] {
+            std::env::set_var("TTS_PROVIDER", raw);
+            assert_eq!(resolve_provider(), "local");
+        }
+        std::env::set_var("TTS_PROVIDER", "google");
+        assert_eq!(resolve_provider(), "google");
+        std::env::remove_var("TTS_PROVIDER");
+        assert_eq!(resolve_provider(), "local");
+    }
 }

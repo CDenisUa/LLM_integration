@@ -1,5 +1,5 @@
 // Core
-use axum::{routing::post, Router};
+use axum::{routing::{get, post}, Router};
 // Services
 mod chat;
 mod generate;
@@ -18,6 +18,9 @@ pub fn router() -> Router {
         .route("/pipeline/styles", post(pipeline::generate_styles_handler))
         .route("/pipeline/assemble", post(pipeline::assemble_handler))
         .route("/tts", post(tts::tts_handler))
+        .route("/tts/engines", get(tts::list_engines))
+        .route("/tts/voices", get(tts::list_voices))
+        .route("/tts/test-voice", post(tts::test_voice))
         .route("/pdf", axum::routing::get(pdf::list_pdfs))
         .route("/pdf/:id", axum::routing::put(pdf::update_pdf).delete(pdf::delete_pdf))
         .route("/pdf/upload", post(pdf::upload_pdf))

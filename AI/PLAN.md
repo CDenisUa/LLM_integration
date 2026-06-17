@@ -27,11 +27,12 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - [ ] Russian voice smoke: synthesize spec test phrase (needs `./setup.sh --download`; manual).
 - [ ] Wire into `start-dev.sh` (optional auto-start) — deferred to Phase 2 wiring.
 
-## Phase 2 — Rust `local` TTS provider ⬜
-- [ ] `TtsEngine` trait + `LocalEngine` calling the sidecar.
-- [ ] **Tests first:** request building + response parsing against a `wiremock` mock server.
-- [ ] Add provider `local` to `/api/tts`; keep cloud providers as optional fallback.
-- [ ] New routes: `GET /api/tts/engines`, `GET /api/tts/voices`, `POST /api/tts/test-voice`.
+## Phase 2 — Rust `local` TTS provider ✅
+- [x] `synthesize_local` calling the sidecar; `resolve_provider` (default `local`, cloud kept as fallback).
+- [x] **Tests:** 4 tests vs `wiremock` (base64 WAV + JSON body, sidecar 500 error, unreachable→502, provider resolution). All green.
+- [x] Provider `local` wired into `/api/tts` with config-aware cache hashing.
+- [x] New routes: `GET /api/tts/engines`, `GET /api/tts/voices`, `POST /api/tts/test-voice` (defaults to RU test phrase).
+- [x] Optional sidecar auto-start in `start-dev.sh` (only if `tts_service/.venv` exists).
 
 ## Phase 3 — Text extraction ⬜ (TDD)
 - [ ] `extract::txt` — encoding detect + line-break normalize.
@@ -80,3 +81,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 ## Changelog
 - _2026-06-17_ — Plan + architecture authored. Decisions locked: XTTS v2 sidecar, Rust kept, SQLite, full scope, TDD.
 - _2026-06-17_ — Phase 0 done (baseline green, `.env.example` extended). Phase 1 done: XTTS v2 sidecar with 6 passing contract tests (no model load), `setup.sh`, README.
+- _2026-06-17_ — Phase 2 done: Rust `local` provider + engines/voices/test-voice routes; 4 wiremock-backed tests (5 total Rust tests green); sidecar auto-start in start-dev.sh.

@@ -9,6 +9,8 @@ HOST="${HOST:-127.0.0.1}"
 
 BACKEND_PID=""
 FRONTEND_PID=""
+TTS_PID=""
+TTS_PORT="${TTS_LOCAL_PORT:-8123}"
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -40,6 +42,20 @@ start_frontend() {
   FRONTEND_PID="$!"
 }
 
+start_tts() {
+  # Optional: only start the local XTTS sidecar if it has been set up.
+  if [[ ! -x "${ROOT_DIR}/tts_service/.venv/bin/python" ]]; then
+    echo "TTS sidecar not set up (run tts_service/setup.sh) — skipping."
+    return 0
+  fi
+  echo "Starting TTS sidecar on http://${HOST}:${TTS_PORT}"
+  (
+    cd "${ROOT_DIR}"
+    TTS_LOCAL_PORT="${TTS_PORT}" tts_service/.venv/bin/python -m tts_service.run
+  ) &
+  TTS_PID="$!"
+}
+
 free_port() {
   local port="$1"
   local pids
@@ -65,7 +81,7 @@ cleanup() {
 
   trap - EXIT INT TERM
 
-  for pid in "${FRONTEND_PID}" "${BACKEND_PID}"; do
+  for pid in "${FRONTEND_PID}" "${BACKEND_PID}" "${TTS_PID}"; do
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
       kill "${pid}" 2>/dev/null || true
     fi
@@ -100,7 +116,9 @@ require_command cargo-watch
 
 free_port "${FRONTEND_PORT}"
 free_port "${BACKEND_PORT}"
+free_port "${TTS_PORT}"
 
+start_tts
 start_backend
 start_frontend
 
@@ -108,5 +126,6 @@ trap 'cleanup $?' EXIT INT TERM
 
 echo "Frontend PID: ${FRONTEND_PID}"
 echo "Backend PID: ${BACKEND_PID}"
+echo "TTS PID: ${TTS_PID:-<not started>}"
 
 monitor_processes
