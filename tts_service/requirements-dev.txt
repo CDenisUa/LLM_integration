@@ -1,0 +1,6 @@
+# Light deps to run the contract tests WITHOUT loading the model (no torch).
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+httpx>=0.27
+pytest>=8.0

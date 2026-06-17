@@ -1,0 +1,6 @@
+# Runtime deps for the XTTS v2 sidecar.
+# coqui-tts is the maintained fork of the original Coqui TTS (pulls torch).
+coqui-tts>=0.24.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6

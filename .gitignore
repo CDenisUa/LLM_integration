@@ -7,5 +7,13 @@ frontend/.next/
 frontend/node_modules/
 frontend/.env.local
 
+# TTS sidecar
+tts_service/.venv/
+tts_service/.venv-dev/
+tts_service/__pycache__/
+tts_service/**/__pycache__/
+tts_service/.pytest_cache/
+tts_service/*.wav
+
 # OS
 .DS_Store
