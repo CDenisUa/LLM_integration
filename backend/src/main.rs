@@ -7,9 +7,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod chapters;
 mod chunking;
 mod clean;
+mod db;
 mod extract;
+mod models;
 mod normalize;
 mod routes;
+mod state;
+// Types
+use state::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -26,6 +31,13 @@ async fn main() {
 
     dotenvy::dotenv().ok();
 
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://storage/library.db".into());
+    let db = db::connect(&database_url)
+        .await
+        .expect("failed to open library database");
+    let state = AppState { db };
+
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -34,7 +46,8 @@ async fn main() {
     let app = Router::new()
         .nest("/api", routes::router())
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 100))
-        .layer(cors);
+        .layer(cors)
+        .with_state(state);
 
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "8080".into())

@@ -1,6 +1,9 @@
 # Backend
 backend/target/
 backend/.env
+backend/storage/library.db
+backend/storage/library.db-wal
+backend/storage/library.db-shm
 
 # Frontend
 frontend/.next/

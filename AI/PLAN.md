@@ -51,10 +51,11 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - [x] `chunking` — `chunk_text` (paragraph-preferred, sentence-safe via `split_sentences`), ordered, oversized-sentence emitted whole; `DEFAULT_MAX_CHUNK_CHARS=2500`.
 - [x] **Tests:** 11 new unit tests (marker variants, no-marker fallback, no mid-sentence cuts, punctuation variants); 44 Rust tests total green.
 
-## Phase 6 — DB + models + migrations ⬜ (TDD)
-- [ ] `sqlx` pool + migrations; `models` for Book/Chapter/Chunk/Progress/Settings.
-- [ ] CRUD + status transitions.
-- [ ] **Tests:** against a temp SQLite per test.
+## Phase 6 — DB + models + migrations ✅ (TDD)
+- [x] `sqlx` SQLite pool + `migrations/0001_init.sql` (books/chapters/chunks/progress/settings + indexes, FK cascade).
+- [x] `models` (Book/Chapter/Chunk/Progress + status constants); `db` CRUD (books, chapters, chunks incl. `next_pending_chunk`, progress upsert).
+- [x] `AppState { db }` wired through `routes::router()` → `Router<AppState>` and `main`.
+- [x] **Tests:** 4 async tests vs shared in-memory SQLite (CRUD, FK cascade, pending-chunk flow, progress upsert); 48 Rust tests total green.
 
 ## Phase 7 — Upload → extract → clean endpoints ⬜
 - [ ] `POST /api/books/upload`, `GET /api/books`, `GET/DELETE /api/books/{id}`.
@@ -86,3 +87,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - _2026-06-17_ — Phase 3 done: `extract` module (txt/html/fb2/epub) with shared `normalize_whitespace`; 21 Rust tests green.
 - _2026-06-17_ — Phase 4 done: `clean` + `normalize` modules; dialogue/ё preserved; 33 Rust tests green.
 - _2026-06-17_ — Phase 5 done: `chapters` (marker detect + virtual split) and `chunking` (sentence-safe); 44 Rust tests green.
+- _2026-06-17_ — Phase 6 done: sqlx SQLite + migrations + models + CRUD; `AppState` wired into router; 48 Rust tests green.

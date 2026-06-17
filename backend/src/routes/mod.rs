@@ -6,8 +6,10 @@ mod generate;
 mod pipeline;
 mod tts;
 mod pdf;
+// Types
+use crate::state::AppState;
 
-pub fn router() -> Router {
+pub fn router() -> Router<AppState> {
     Router::new()
         .route("/chat", post(chat::chat_handler))
         .route("/generate-page", post(generate::generate_page_handler))
