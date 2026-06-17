@@ -57,10 +57,11 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - [x] `AppState { db }` wired through `routes::router()` → `Router<AppState>` and `main`.
 - [x] **Tests:** 4 async tests vs shared in-memory SQLite (CRUD, FK cascade, pending-chunk flow, progress upsert); 48 Rust tests total green.
 
-## Phase 7 — Upload → extract → clean endpoints ⬜
-- [ ] `POST /api/books/upload`, `GET /api/books`, `GET/DELETE /api/books/{id}`.
-- [ ] `POST /api/books/{id}/extract`, `/clean`; status transitions; cover handling.
-- [ ] **Tests:** integration over full upload→ready_for_generation flow.
+## Phase 7 — Upload → extract → clean endpoints ✅
+- [x] `routes::books`: `POST /books/upload` (multipart file+cover), `GET /books`, `GET/DELETE /books/:id`.
+- [x] `POST /books/:id/extract` (format dispatch, chapterize, status → text_extracted; failure → failed) and `POST /books/:id/clean` (clean+normalize, rebuild ordered chunks, status → ready_for_generation).
+- [x] `GET /books/:id/chapters`; book asset layout `storage/books/<id>/{original,cover}`.
+- [x] **Tests:** 3 tests over extract→clean flow (in-memory DB + temp files), idempotent re-clean, format dispatch; 51 Rust tests total green.
 
 ## Phase 8 — Generation pipeline (background worker) ⬜
 - [ ] `jobs` worker: pending chunk → local TTS → wav; chapter merge (ffmpeg) → mp3; book→generated.
@@ -88,3 +89,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - _2026-06-17_ — Phase 4 done: `clean` + `normalize` modules; dialogue/ё preserved; 33 Rust tests green.
 - _2026-06-17_ — Phase 5 done: `chapters` (marker detect + virtual split) and `chunking` (sentence-safe); 44 Rust tests green.
 - _2026-06-17_ — Phase 6 done: sqlx SQLite + migrations + models + CRUD; `AppState` wired into router; 48 Rust tests green.
+- _2026-06-17_ — Phase 7 done: `routes::books` upload/list/get/delete + extract→clean pipeline endpoints; 51 Rust tests green.

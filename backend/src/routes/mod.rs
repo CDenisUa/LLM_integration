@@ -1,6 +1,7 @@
 // Core
 use axum::{routing::{get, post}, Router};
 // Services
+mod books;
 mod chat;
 mod generate;
 mod pipeline;
@@ -19,6 +20,12 @@ pub fn router() -> Router<AppState> {
         .route("/pipeline/content", post(pipeline::generate_content_handler))
         .route("/pipeline/styles", post(pipeline::generate_styles_handler))
         .route("/pipeline/assemble", post(pipeline::assemble_handler))
+        .route("/books", get(books::list_books))
+        .route("/books/upload", post(books::upload_book))
+        .route("/books/:id", get(books::get_book).delete(books::delete_book))
+        .route("/books/:id/extract", post(books::extract_book))
+        .route("/books/:id/clean", post(books::clean_book))
+        .route("/books/:id/chapters", get(books::list_chapters))
         .route("/tts", post(tts::tts_handler))
         .route("/tts/engines", get(tts::list_engines))
         .route("/tts/voices", get(tts::list_voices))

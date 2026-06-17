@@ -107,6 +107,22 @@ pub async fn delete_book(db: &Db, id: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+pub async fn update_book_meta(
+    db: &Db,
+    id: &str,
+    title: &str,
+    author: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE books SET title = ?, author = ?, updated_at = ? WHERE id = ?")
+        .bind(title)
+        .bind(author)
+        .bind(now())
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 // ---- Chapters -------------------------------------------------------------
 
 pub async fn insert_chapter(
@@ -137,6 +153,15 @@ pub async fn list_chapters(db: &Db, book_id: &str) -> Result<Vec<Chapter>, sqlx:
     .bind(book_id)
     .fetch_all(db)
     .await
+}
+
+pub async fn update_chapter_text(db: &Db, id: &str, text: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE chapters SET text = ? WHERE id = ?")
+        .bind(text)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 pub async fn set_chapter_audio(
@@ -176,6 +201,14 @@ pub async fn insert_chunk(
     .bind(text)
     .execute(db)
     .await?;
+    Ok(())
+}
+
+pub async fn delete_chunks_for_book(db: &Db, book_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM chunks WHERE book_id = ?")
+        .bind(book_id)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
