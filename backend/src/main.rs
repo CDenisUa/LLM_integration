@@ -4,7 +4,9 @@ use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // Services
+mod clean;
 mod extract;
+mod normalize;
 mod routes;
 
 #[tokio::main]

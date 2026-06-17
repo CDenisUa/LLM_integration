@@ -879,6 +879,7 @@ dependencies = [
  "encoding_rs",
  "futures-util",
  "quick-xml",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

@@ -41,10 +41,10 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - [x] `extract::fb2` — quick-xml streaming, title/author, nested body sections.
 - [x] **Tests:** 21 Rust tests total green (incl. in-memory epub fixture, CP1251 decode, ё preserved).
 
-## Phase 4 — Cleaning + normalization ⬜ (TDD)
-- [ ] `clean` — page numbers, headers/footers, hyphenation fix, HTML entities, URLs/emails, footnote markers, quote/punct normalize. **Preserve RU dialogue dashes, paragraphs, chapter titles, ё.**
-- [ ] `normalize` — RU/EN abbreviation expansion (spec §4); keep cleaned + normalized versions.
-- [ ] **Tests:** rich table-driven cases incl. dialogue-preservation regression.
+## Phase 4 — Cleaning + normalization ✅ (TDD)
+- [x] `clean` — entities, URLs/emails, footnote markers, page-number/ISBN lines, hyphenation fix, quote/punct normalize. **Preserves RU dialogue dashes, paragraphs, titles, ё.** (headers/footers heuristic deferred to future.)
+- [x] `normalize` — RU/EN abbreviation expansion (т.е., т.к., и т.д., ул., стр., №, e.g., Mr.…); `г.` left ambiguous; numbers kept as digits.
+- [x] **Tests:** 16 new unit tests incl. dialogue-preservation + ё regression; 33 Rust tests total green.
 
 ## Phase 5 — Chapter detection + chunking ⬜ (TDD)
 - [ ] `chapters` — marker detection (Глава/Часть/Пролог/Эпилог/Chapter/Part…), virtual split by size fallback.
@@ -84,3 +84,4 @@ Status: ⬜ todo · 🟡 in progress · ✅ done
 - _2026-06-17_ — Phase 0 done (baseline green, `.env.example` extended). Phase 1 done: XTTS v2 sidecar with 6 passing contract tests (no model load), `setup.sh`, README.
 - _2026-06-17_ — Phase 2 done: Rust `local` provider + engines/voices/test-voice routes; 4 wiremock-backed tests (5 total Rust tests green); sidecar auto-start in start-dev.sh.
 - _2026-06-17_ — Phase 3 done: `extract` module (txt/html/fb2/epub) with shared `normalize_whitespace`; 21 Rust tests green.
+- _2026-06-17_ — Phase 4 done: `clean` + `normalize` modules; dialogue/ё preserved; 33 Rust tests green.
